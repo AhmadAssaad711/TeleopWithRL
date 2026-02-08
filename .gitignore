@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Training outputs (large binary files)
+results/models/*.npy
+results/logs/*.npz
+results/logs/*.log
+results/plots/*.png
+
+# Legacy root-level outputs (from older runs)
+*.npy
+*.npz
+*.log
+*.png
+
+# Jupyter
+.ipynb_checkpoints/
