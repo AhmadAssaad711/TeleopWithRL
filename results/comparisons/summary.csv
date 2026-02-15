@@ -1,0 +1,5 @@
+case,agent,mean_reward,tracking_rmse_mm,transparency_rmse_w
+constant,MRAC,-193.109800,22.205812,0.935846
+constant,RL,-57.775173,6.139932,1.224709
+changing,MRAC,-176.405948,19.707001,1.289289
+changing,RL,-489.872775,19.948452,3.183623

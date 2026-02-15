@@ -15,8 +15,11 @@ Internal state (12-D, continuous):
   [x_m, v_m, x_s, v_s, P_m1, P_m2, P_s1, P_s2,
    ṁ_L1, ṁ_L2, x_v, v_v]
 
-Observation (4-D, for RL agent):
+Observation (4-D, for plotting/diagnostics):
   [pos_error, vel_error, F_h, F_e]
+
+Discrete RL state (tabular Q-learning):
+  [pos_error, vel_error, (P_m1-P_m2), (P_s1-P_s2), mdot_L1, mdot_L2, x_v]
 
 Action:
   Discrete index → servo-valve voltage u_v ∈ V_LEVELS.
@@ -231,9 +234,10 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     #  __init__                                                       #
     # -------------------------------------------------------------- #
-    def __init__(self, render_mode: str | None = None):
+    def __init__(self, render_mode: str | None = None, env_mode: str | None = None):
         super().__init__()
         self.render_mode = render_mode
+        self.env_mode = env_mode or cfg.ENV_MODE_CONSTANT
 
         self.action_space = spaces.Discrete(cfg.N_ACTIONS)
 
@@ -243,6 +247,34 @@ class TeleopEnv(gym.Env):
 
         self._action_table = cfg.V_LEVELS.copy()
         self._history: dict[str, list] | None = None
+        self.last_u_v: float = 0.0
+        self.current_env_label: str = "skin"
+        self.current_env_id: int = 0
+
+    def _set_environment(self, env_label: str) -> None:
+        if env_label == "skin":
+            self.Be, self.Ke = cfg.SKIN_BE, cfg.SKIN_KE
+            self.current_env_label = "skin"
+            self.current_env_id = 0
+            return
+        if env_label == "fat":
+            self.Be, self.Ke = cfg.FAT_BE, cfg.FAT_KE
+            self.current_env_label = "fat"
+            self.current_env_id = 1
+            return
+        raise ValueError(f"Unknown environment label: {env_label}")
+
+    def _update_environment_mode(self) -> None:
+        if self.env_mode == cfg.ENV_MODE_CONSTANT:
+            self._set_environment("skin")
+            return
+        if self.env_mode == cfg.ENV_MODE_CHANGING:
+            if self.t < cfg.ENV_SWITCH_TIME:
+                self._set_environment("skin")
+            else:
+                self._set_environment("fat")
+            return
+        raise ValueError(f"Unknown env_mode: {self.env_mode}")
 
     # -------------------------------------------------------------- #
     #  reset                                                          #
@@ -263,20 +295,18 @@ class TeleopEnv(gym.Env):
         self.t = 0.0
         self.step_count = 0
 
-        # --- Randomise human force (training diversity) -------------
-        self.fh_amp   = cfg.FH_AMP  * self.np_random.uniform(0.5, 1.5)
-        self.fh_freq  = cfg.FH_FREQ * self.np_random.uniform(0.5, 2.0)
-        self.fh_phase = self.np_random.uniform(0. , 2 * np.pi)
+        # --- Constant force profile (deterministic training setup) ---
+        self.fh_amp   = cfg.FH_AMP
+        self.fh_freq  = cfg.FH_FREQ
+        self.fh_phase = 0.0
 
-        # --- Randomise environment (skin / fat) ---------------------
-        if self.np_random.random() < 0.5:
-            self.Be, self.Ke = cfg.SKIN_BE, cfg.SKIN_KE
-        else:
-            self.Be, self.Ke = cfg.FAT_BE, cfg.FAT_KE
+        # --- Environment mode ----------------------------------------
+        self._update_environment_mode()
 
         # --- Forces (persisted for observation / logging) -----------
         self.F_h = 0.0
         self.F_e = 0.0
+        self.last_u_v = 0.0
 
         # --- Episode history ----------------------------------------
         self._history = {
@@ -284,7 +314,10 @@ class TeleopEnv(gym.Env):
             "v_m": [], "v_s": [],
             "P_m1": [], "P_m2": [], "P_s1": [], "P_s2": [],
             "F_h": [], "F_e": [], "u_v": [], "x_v": [],
-            "pos_error": [], "reward": [],
+            "env_id": [], "env_label": [],
+            "pos_error": [], "transparency_error": [],
+            "reward_track": [], "reward_effort": [], "reward_transparency": [],
+            "reward": [],
         }
 
         return self._get_obs(), self._get_info()
@@ -300,6 +333,8 @@ class TeleopEnv(gym.Env):
         assert self.action_space.contains(action), f"Invalid action {action}"
 
         u_v = float(self._action_table[action])
+        self.last_u_v = u_v
+        self._update_environment_mode()
 
         # ── Physics integration (pure-Python fast kernel) ────────
         self.state, self.t = _rk4_substeps(
@@ -322,9 +357,27 @@ class TeleopEnv(gym.Env):
         self.F_e = self.Ke * delta_xs + self.Be * v_s
 
         # --- Reward -----------------------------------------------
-        reward = -(cfg.ALPHA_TRACKING * pos_error ** 2
-                   + cfg.GAMMA_EFFORT * u_v ** 2)
+        # --- Tracking error (normalized) ---
+        pos_error = (x_m - x_s)
+        norm_pos_error = pos_error / cfg.MAX_POSITION_ERROR
+        norm_pos_error = float(np.clip(
+            norm_pos_error, -cfg.POS_ERR_NORM_CLIP, cfg.POS_ERR_NORM_CLIP
+        ))
+
+        # --- Transparency error (power mismatch) ---
+        transparency_error = self.F_e * v_m - self.F_h * v_s
+        norm_transparency_error = transparency_error / cfg.MAX_POWER_ERROR
+
+        track_term = cfg.ALPHA_TRACKING * norm_pos_error**2
+        effort_term = cfg.GAMMA_EFFORT * u_v**2
+        transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error**2
+
+        # --- Reward ---
+        reward = -(track_term + effort_term + transparency_term)
+
+        # Optional clipping
         reward = float(np.clip(reward, -cfg.REWARD_CLIP, cfg.REWARD_CLIP))
+
 
         # --- History (one entry per RL step) ----------------------
         if self._history is not None:
@@ -341,10 +394,16 @@ class TeleopEnv(gym.Env):
             self._history["F_e"].append(self.F_e)
             self._history["u_v"].append(u_v)
             self._history["x_v"].append(self.state[self.IX_XV])
+            self._history["env_id"].append(self.current_env_id)
+            self._history["env_label"].append(self.current_env_label)
             self._history["pos_error"].append(pos_error)
+            self._history["transparency_error"].append(transparency_error)
+            self._history["reward_track"].append(track_term)
+            self._history["reward_effort"].append(effort_term)
+            self._history["reward_transparency"].append(transparency_term)
             self._history["reward"].append(reward)
 
-        terminated = False
+        terminated = abs(pos_error) >= cfg.POS_ERROR_FAIL_THRESHOLD
         truncated  = self.step_count >= cfg.MAX_STEPS
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
@@ -371,9 +430,11 @@ class TeleopEnv(gym.Env):
     def _get_info(self) -> dict:
         return {
             "time": self.t,
-            "u_v":  0.0,
+            "u_v":  self.last_u_v,
             "F_h":  self.F_h,
             "F_e":  self.F_e,
+            "env_id": self.current_env_id,
+            "env_label": self.current_env_label,
             "x_m":  self.state[self.IX_XM],
             "x_s":  self.state[self.IX_XS],
             "step_count": self.step_count,
@@ -382,12 +443,21 @@ class TeleopEnv(gym.Env):
     # ---------- Q-table helpers ----------
 
     def discretise_obs(self, obs: np.ndarray) -> tuple[int, ...]:
-        """Map continuous 4-D obs → discrete state for Q-table."""
+        """Map continuous/plant state to discrete tabular RL state."""
+        pm_diff = self.state[self.IX_PM1] - self.state[self.IX_PM2]
+        ps_diff = self.state[self.IX_PS1] - self.state[self.IX_PS2]
+        mdot_l1 = self.state[self.IX_ML1]
+        mdot_l2 = self.state[self.IX_ML2]
+        spool_x = self.state[self.IX_XV]
+
         return (
             int(np.digitize(obs[0], cfg.POS_ERROR_BINS)),
             int(np.digitize(obs[1], cfg.VEL_ERROR_BINS)),
-            int(np.digitize(obs[2], cfg.FH_BINS)),
-            int(np.digitize(obs[3], cfg.FE_BINS)),
+            int(np.digitize(pm_diff, cfg.PM_DIFF_BINS)),
+            int(np.digitize(ps_diff, cfg.PS_DIFF_BINS)),
+            int(np.digitize(mdot_l1, cfg.FLOW_BINS)),
+            int(np.digitize(mdot_l2, cfg.FLOW_BINS)),
+            int(np.digitize(spool_x, cfg.SPOOL_POS_BINS)),
         )
 
     def get_state_dims(self) -> tuple[int, ...]:
@@ -395,6 +465,9 @@ class TeleopEnv(gym.Env):
         return (
             len(cfg.POS_ERROR_BINS) + 1,
             len(cfg.VEL_ERROR_BINS) + 1,
-            len(cfg.FH_BINS)        + 1,
-            len(cfg.FE_BINS)        + 1,
+            len(cfg.PM_DIFF_BINS)   + 1,
+            len(cfg.PS_DIFF_BINS)   + 1,
+            len(cfg.FLOW_BINS)      + 1,
+            len(cfg.FLOW_BINS)      + 1,
+            len(cfg.SPOOL_POS_BINS) + 1,
         )
