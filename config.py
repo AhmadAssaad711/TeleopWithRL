@@ -124,6 +124,15 @@ SPOOL_POS_BINS = np.array([
      0.10,  0.25,  0.50,  0.80
 ])
 
+# Observation/discretization bins aligned with the environment observation:
+# [slave_pos_err, master_pos_err, tube1_dp, tube2_dp, mdot_L1, mdot_L2]
+SLAVE_POS_ERROR_BINS = POS_ERROR_BINS.copy()
+MASTER_POS_ERROR_BINS = POS_ERROR_BINS.copy()
+TUBE1_DIFF_BINS = PM_DIFF_BINS.copy()
+TUBE2_DIFF_BINS = PM_DIFF_BINS.copy()
+MASS_FLOW1_BINS = FLOW_BINS.copy()
+MASS_FLOW2_BINS = FLOW_BINS.copy()
+
 # ================================================================== #
 #  TERMINATION + REWARD SCALING                                      #
 # ================================================================== #
@@ -158,6 +167,17 @@ MRAC_GAMMA1   = 6.0
 MRAC_GAMMA2   = 0.8
 MRAC_THETA0   = np.array([-6.0, 1.8, 6.6, 0.0, 0.0], dtype=np.float64)
 MRAC_U_CLIP   = 10.0
+MRAC_G1_GAIN  = 1.0
+
+# ================================================================== #
+#  PAPER REPLICA PROFILE (IC2AI 2025)                               #
+# ================================================================== #
+PAPER_EPISODE_DURATION = 60.0
+PAPER_ENV_SWITCH_TIME  = 30.0
+PAPER_FORCE_AMP        = 10.0
+PAPER_FORCE_FREQ       = 0.5
+PAPER_FORCE_PHASE      = 0.0
+PAPER_RESULTS_DIR      = "paper_replica"
 
 # ================================================================== #
 #  Q-LEARNING HYPER-PARAMETERS                                       #

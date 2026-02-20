@@ -127,7 +127,7 @@ def _evaluate_mrac(env_mode: str, n_episodes: int) -> EvalResult:
 
         while not done:
             action, _ = ctrl.step_action(
-                pos_error=float(obs[0]),
+                pos_error=float(info["x_m"] - info["x_s"]),
                 u_c=float(info["x_m"]),
                 action_table=cfg.V_LEVELS,
             )

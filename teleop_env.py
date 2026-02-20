@@ -15,11 +15,12 @@ Internal state (12-D, continuous):
   [x_m, v_m, x_s, v_s, P_m1, P_m2, P_s1, P_s2,
    ṁ_L1, ṁ_L2, x_v, v_v]
 
-Observation (4-D, for plotting/diagnostics):
-  [pos_error, vel_error, F_h, F_e]
+Observation (6-D):
+  [slave_pos_error, master_pos_error, tube1_pressure_diff, tube2_pressure_diff,
+   mdot_L1, mdot_L2]
 
 Discrete RL state (tabular Q-learning):
-  [pos_error, vel_error, (P_m1-P_m2), (P_s1-P_s2), mdot_L1, mdot_L2, x_v]
+  same feature set as the observation above
 
 Action:
   Discrete index → servo-valve voltage u_v ∈ V_LEVELS.
@@ -234,15 +235,44 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     #  __init__                                                       #
     # -------------------------------------------------------------- #
-    def __init__(self, render_mode: str | None = None, env_mode: str | None = None):
+    def __init__(
+        self,
+        render_mode: str | None = None,
+        env_mode: str | None = None,
+        episode_duration: float | None = None,
+        env_switch_time: float | None = None,
+        terminate_on_error: bool = True,
+    ):
         super().__init__()
         self.render_mode = render_mode
         self.env_mode = env_mode or cfg.ENV_MODE_CONSTANT
+        self.episode_duration = float(
+            cfg.EPISODE_DURATION if episode_duration is None else episode_duration
+        )
+        self.env_switch_time = float(
+            cfg.ENV_SWITCH_TIME if env_switch_time is None else env_switch_time
+        )
+        self.max_steps = max(1, int(self.episode_duration / cfg.RL_DT))
+        self.terminate_on_error = bool(terminate_on_error)
 
         self.action_space = spaces.Discrete(cfg.N_ACTIONS)
 
-        low  = np.array([-cfg.L_CYL, -1.0, -20.0, -50.0], dtype=np.float32)
-        high = np.array([ cfg.L_CYL,  1.0,  20.0,  50.0], dtype=np.float32)
+        low = np.array([
+            -cfg.L_CYL,      # slave_pos_error
+            -cfg.L_CYL,      # master_pos_error
+            -600_000.0,      # tube1 pressure diff
+            -600_000.0,      # tube2 pressure diff
+            -0.01,           # mdot_L1
+            -0.01,           # mdot_L2
+        ], dtype=np.float32)
+        high = np.array([
+            cfg.L_CYL,       # slave_pos_error
+            cfg.L_CYL,       # master_pos_error
+            600_000.0,       # tube1 pressure diff
+            600_000.0,       # tube2 pressure diff
+            0.01,            # mdot_L1
+            0.01,            # mdot_L2
+        ], dtype=np.float32)
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
 
         self._action_table = cfg.V_LEVELS.copy()
@@ -269,7 +299,7 @@ class TeleopEnv(gym.Env):
             self._set_environment("skin")
             return
         if self.env_mode == cfg.ENV_MODE_CHANGING:
-            if self.t < cfg.ENV_SWITCH_TIME:
+            if self.t < self.env_switch_time:
                 self._set_environment("skin")
             else:
                 self._set_environment("fat")
@@ -329,10 +359,7 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     #  Gym step                                                       #
     # -------------------------------------------------------------- #
-    def step(self, action: int):
-        assert self.action_space.contains(action), f"Invalid action {action}"
-
-        u_v = float(self._action_table[action])
+    def _step_with_voltage(self, u_v: float):
         self.last_u_v = u_v
         self._update_environment_mode()
 
@@ -403,10 +430,21 @@ class TeleopEnv(gym.Env):
             self._history["reward_transparency"].append(transparency_term)
             self._history["reward"].append(reward)
 
-        terminated = abs(pos_error) >= cfg.POS_ERROR_FAIL_THRESHOLD
-        truncated  = self.step_count >= cfg.MAX_STEPS
+        terminated = bool(self.terminate_on_error and (abs(pos_error) >= cfg.POS_ERROR_FAIL_THRESHOLD))
+        truncated  = self.step_count >= self.max_steps
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
+
+    def step(self, action: int):
+        assert self.action_space.contains(action), f"Invalid action {action}"
+        u_v = float(self._action_table[action])
+        return self._step_with_voltage(u_v)
+
+    def step_voltage(self, u_v: float):
+        u_min = float(self._action_table.min())
+        u_max = float(self._action_table.max())
+        u_v = float(np.clip(u_v, u_min, u_max))
+        return self._step_with_voltage(u_v)
 
     # -------------------------------------------------------------- #
     #  render                                                         #
@@ -419,12 +457,24 @@ class TeleopEnv(gym.Env):
     #  Helpers                                                        #
     # -------------------------------------------------------------- #
     def _get_obs(self) -> np.ndarray:
-        """4-D continuous observation: [pos_error, vel_error, F_h, F_e]."""
+        """
+        6-D observation:
+        [slave_pos_error, master_pos_error, tube1_pressure_diff,
+         tube2_pressure_diff, mdot_L1, mdot_L2]
+        """
+        slave_pos_error = self.state[self.IX_XS] - _X_EQ
+        master_pos_error = self.state[self.IX_XM] - _X_EQ
+        tube1_pressure_diff = self.state[self.IX_PM1] - self.state[self.IX_PS2]
+        tube2_pressure_diff = self.state[self.IX_PM2] - self.state[self.IX_PS1]
+        mdot_l1 = self.state[self.IX_ML1]
+        mdot_l2 = self.state[self.IX_ML2]
         return np.array([
-            self.state[self.IX_XM] - self.state[self.IX_XS],
-            self.state[self.IX_VM] - self.state[self.IX_VS],
-            self.F_h,
-            self.F_e,
+            slave_pos_error,
+            master_pos_error,
+            tube1_pressure_diff,
+            tube2_pressure_diff,
+            mdot_l1,
+            mdot_l2,
         ], dtype=np.float32)
 
     def _get_info(self) -> dict:
@@ -438,36 +488,32 @@ class TeleopEnv(gym.Env):
             "x_m":  self.state[self.IX_XM],
             "x_s":  self.state[self.IX_XS],
             "step_count": self.step_count,
+            "max_steps": self.max_steps,
+            "episode_duration": self.episode_duration,
+            "env_switch_time": self.env_switch_time,
+            "terminate_on_error": self.terminate_on_error,
         }
 
     # ---------- Q-table helpers ----------
 
     def discretise_obs(self, obs: np.ndarray) -> tuple[int, ...]:
         """Map continuous/plant state to discrete tabular RL state."""
-        pm_diff = self.state[self.IX_PM1] - self.state[self.IX_PM2]
-        ps_diff = self.state[self.IX_PS1] - self.state[self.IX_PS2]
-        mdot_l1 = self.state[self.IX_ML1]
-        mdot_l2 = self.state[self.IX_ML2]
-        spool_x = self.state[self.IX_XV]
-
         return (
-            int(np.digitize(obs[0], cfg.POS_ERROR_BINS)),
-            int(np.digitize(obs[1], cfg.VEL_ERROR_BINS)),
-            int(np.digitize(pm_diff, cfg.PM_DIFF_BINS)),
-            int(np.digitize(ps_diff, cfg.PS_DIFF_BINS)),
-            int(np.digitize(mdot_l1, cfg.FLOW_BINS)),
-            int(np.digitize(mdot_l2, cfg.FLOW_BINS)),
-            int(np.digitize(spool_x, cfg.SPOOL_POS_BINS)),
+            int(np.digitize(obs[0], cfg.SLAVE_POS_ERROR_BINS)),
+            int(np.digitize(obs[1], cfg.MASTER_POS_ERROR_BINS)),
+            int(np.digitize(obs[2], cfg.TUBE1_DIFF_BINS)),
+            int(np.digitize(obs[3], cfg.TUBE2_DIFF_BINS)),
+            int(np.digitize(obs[4], cfg.MASS_FLOW1_BINS)),
+            int(np.digitize(obs[5], cfg.MASS_FLOW2_BINS)),
         )
 
     def get_state_dims(self) -> tuple[int, ...]:
         """Number of discrete bins per dimension (for Q-table shape)."""
         return (
-            len(cfg.POS_ERROR_BINS) + 1,
-            len(cfg.VEL_ERROR_BINS) + 1,
-            len(cfg.PM_DIFF_BINS)   + 1,
-            len(cfg.PS_DIFF_BINS)   + 1,
-            len(cfg.FLOW_BINS)      + 1,
-            len(cfg.FLOW_BINS)      + 1,
-            len(cfg.SPOOL_POS_BINS) + 1,
+            len(cfg.SLAVE_POS_ERROR_BINS) + 1,
+            len(cfg.MASTER_POS_ERROR_BINS) + 1,
+            len(cfg.TUBE1_DIFF_BINS) + 1,
+            len(cfg.TUBE2_DIFF_BINS) + 1,
+            len(cfg.MASS_FLOW1_BINS) + 1,
+            len(cfg.MASS_FLOW2_BINS) + 1,
         )
