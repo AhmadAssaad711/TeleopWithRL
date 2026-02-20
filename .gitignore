@@ -15,16 +15,31 @@ venv/
 .idea/
 
 # Training outputs (large binary files)
-results/models/*.npy
-results/logs/*.npz
-results/logs/*.log
-results/plots/*.png
+# Archived old results (100k-episode run, 4-D state space)
+results/old/
 
-# Legacy root-level outputs (from older runs)
-*.npy
-*.npz
-*.log
-*.png
+# New per-agent results (benchmark_agents.py output)
+results/rl_constant/models/*.npy
+results/rl_constant/logs/*.npz
+results/rl_constant/logs/*.log
+results/rl_constant/episodes/*.npz
+results/rl_constant/plots/*.png
+
+results/rl_changing/models/*.npy
+results/rl_changing/logs/*.npz
+results/rl_changing/logs/*.log
+results/rl_changing/episodes/*.npz
+results/rl_changing/plots/*.png
+
+results/mrac/logs/*.txt
+results/mrac/episodes/*.npz
+
+results/comparisons/*.log
+results/comparisons/*.png
+results/comparisons/*.csv
+
+# Temp files
+tmpclaude-*
 
 # Jupyter
 .ipynb_checkpoints/
