@@ -15,15 +15,16 @@ Internal state (12-D, continuous):
   [x_m, v_m, x_s, v_s, P_m1, P_m2, P_s1, P_s2,
    ṁ_L1, ṁ_L2, x_v, v_v]
 
-Observation (6-D):
-  [slave_pos_error, master_pos_error, tube1_pressure_diff, tube2_pressure_diff,
+Observation (8-D):
+  [slave_pos_error, master_pos_error, P_s1, P_s2, P_m1, P_m2,
    mdot_L1, mdot_L2]
 
 Discrete RL state (tabular Q-learning):
   same feature set as the observation above
 
 Action:
-  Discrete index → servo-valve voltage u_v ∈ V_LEVELS.
+  Continuous servo-valve voltage u_v ∈ [0, 10] V.
+  (For backward compatibility, integer action indices into V_LEVELS are also accepted.)
 
 Dynamics equations (numbers refer to paper):
   (2)  Master EOM       m_p·ẍ_m = (P_m1 − P_m2)·A_p − β·ẋ_m  − F_h
@@ -34,6 +35,11 @@ Dynamics equations (numbers refer to paper):
   (8)  Valve spool      ẍ_v + 2·ζ_v·ω·ẋ_v + ω²·x_v = K_v·ω²·u_v
   (10) Tube inertance   dṁ_L/dt = (A_t/L)·(P_up − P_down − ΔP_friction)
   (11) Tube friction    ΔP_friction = 32·μ·ṁ_L·L / (ρ·A_t·D_t²)
+
+Force semantics in this implementation:
+  - F_h_input: prescribed sinusoidal human excitation used in the master EOM.
+  - F_h: reflected force at the operator, computed from Eq. (2):
+         F_h = (P_m1 - P_m2)·A_p - m_p·ẍ_m - β·ẋ_m
 """
 
 from __future__ import annotations
@@ -126,11 +132,11 @@ def _derivatives(s: list[float], t: float, u_v: float,
     V_s1 = _VMD + x_s * _AP
     V_s2 = _VMD + (_LCYL - x_s) * _AP
 
-    # Human force
-    F_h = fh_amp * math.sin(_TWO_PI * fh_freq * t + fh_phase)
+    # Prescribed human excitation (input force at master side)
+    F_h_input = fh_amp * math.sin(_TWO_PI * fh_freq * t + fh_phase)
 
     # (A) Equations of motion  (Eqs 2, 3)
-    a_m = ((P_m1 - P_m2) * _AP - _BETA * v_m - F_h) / _MP
+    a_m = ((P_m1 - P_m2) * _AP - _BETA * v_m - F_h_input) / _MP
     delta_xs = x_s - _X_EQ
     a_s = ((P_s1 - P_s2) * _AP - (_BETA + Be) * v_s - Ke * delta_xs) / _MP
 
@@ -255,27 +261,37 @@ class TeleopEnv(gym.Env):
         self.max_steps = max(1, int(self.episode_duration / cfg.RL_DT))
         self.terminate_on_error = bool(terminate_on_error)
 
-        self.action_space = spaces.Discrete(cfg.N_ACTIONS)
+        self._action_table = cfg.V_LEVELS.copy()
+        self._u_min = float(self._action_table.min())
+        self._u_max = float(self._action_table.max())
+        self.action_space = spaces.Box(
+            low=np.array([self._u_min], dtype=np.float32),
+            high=np.array([self._u_max], dtype=np.float32),
+            dtype=np.float32,
+        )
 
         low = np.array([
             -cfg.L_CYL,      # slave_pos_error
             -cfg.L_CYL,      # master_pos_error
-            -600_000.0,      # tube1 pressure diff
-            -600_000.0,      # tube2 pressure diff
+            0.0,             # P_s1
+            0.0,             # P_s2
+            0.0,             # P_m1
+            0.0,             # P_m2
             -0.01,           # mdot_L1
             -0.01,           # mdot_L2
         ], dtype=np.float32)
         high = np.array([
             cfg.L_CYL,       # slave_pos_error
             cfg.L_CYL,       # master_pos_error
-            600_000.0,       # tube1 pressure diff
-            600_000.0,       # tube2 pressure diff
+            700_000.0,       # P_s1
+            700_000.0,       # P_s2
+            700_000.0,       # P_m1
+            700_000.0,       # P_m2
             0.01,            # mdot_L1
             0.01,            # mdot_L2
         ], dtype=np.float32)
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
 
-        self._action_table = cfg.V_LEVELS.copy()
         self._history: dict[str, list] | None = None
         self.last_u_v: float = 0.0
         self.current_env_label: str = "skin"
@@ -335,6 +351,7 @@ class TeleopEnv(gym.Env):
 
         # --- Forces (persisted for observation / logging) -----------
         self.F_h = 0.0
+        self.F_h_input = 0.0
         self.F_e = 0.0
         self.last_u_v = 0.0
 
@@ -343,7 +360,7 @@ class TeleopEnv(gym.Env):
             "time": [], "x_m": [], "x_s": [],
             "v_m": [], "v_s": [],
             "P_m1": [], "P_m2": [], "P_s1": [], "P_s2": [],
-            "F_h": [], "F_e": [], "u_v": [], "x_v": [],
+            "F_h": [], "F_h_input": [], "F_e": [], "u_v": [], "x_v": [],
             "env_id": [], "env_label": [],
             "pos_error": [], "transparency_error": [],
             "reward_track": [], "reward_effort": [], "reward_transparency": [],
@@ -362,6 +379,7 @@ class TeleopEnv(gym.Env):
     def _step_with_voltage(self, u_v: float):
         self.last_u_v = u_v
         self._update_environment_mode()
+        v_m_prev = float(self.state[self.IX_VM])
 
         # ── Physics integration (pure-Python fast kernel) ────────
         self.state, self.t = _rk4_substeps(
@@ -377,9 +395,18 @@ class TeleopEnv(gym.Env):
         x_s, v_s = self.state[self.IX_XS], self.state[self.IX_VS]
         pos_error = x_m - x_s
 
-        # Update stored forces for observation
-        self.F_h = self.fh_amp * np.sin(
-            2 * np.pi * self.fh_freq * self.t + self.fh_phase)
+        # Update stored forces:
+        # - F_h_input drives master dynamics.
+        # - F_h is reflected force from Eq. (2).
+        self.F_h_input = float(
+            self.fh_amp * np.sin(2 * np.pi * self.fh_freq * self.t + self.fh_phase)
+        )
+        a_m_est = float((v_m - v_m_prev) / cfg.RL_DT)
+        self.F_h = float(
+            (self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP
+            - _MP * a_m_est
+            - _BETA * v_m
+        )
         delta_xs = x_s - _X_EQ
         self.F_e = self.Ke * delta_xs + self.Be * v_s
 
@@ -418,6 +445,7 @@ class TeleopEnv(gym.Env):
             self._history["P_s1"].append(self.state[self.IX_PS1])
             self._history["P_s2"].append(self.state[self.IX_PS2])
             self._history["F_h"].append(self.F_h)
+            self._history["F_h_input"].append(self.F_h_input)
             self._history["F_e"].append(self.F_e)
             self._history["u_v"].append(u_v)
             self._history["x_v"].append(self.state[self.IX_XV])
@@ -435,15 +463,29 @@ class TeleopEnv(gym.Env):
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
-    def step(self, action: int):
-        assert self.action_space.contains(action), f"Invalid action {action}"
-        u_v = float(self._action_table[action])
+    def _action_to_voltage(self, action: int | float | np.ndarray) -> float:
+        """
+        Accept either:
+          - integer action index into V_LEVELS (legacy tabular RL), or
+          - scalar/shape-(1,) continuous voltage in [u_min, u_max].
+        """
+        if isinstance(action, (int, np.integer)):
+            idx = int(action)
+            if idx < 0 or idx >= self._action_table.size:
+                raise AssertionError(f"Invalid discrete action index {action}")
+            return float(self._action_table[idx])
+
+        arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        if arr.size != 1:
+            raise AssertionError(f"Invalid continuous action shape: {np.asarray(action).shape}")
+        return float(np.clip(float(arr[0]), self._u_min, self._u_max))
+
+    def step(self, action: int | float | np.ndarray):
+        u_v = self._action_to_voltage(action)
         return self._step_with_voltage(u_v)
 
     def step_voltage(self, u_v: float):
-        u_min = float(self._action_table.min())
-        u_max = float(self._action_table.max())
-        u_v = float(np.clip(u_v, u_min, u_max))
+        u_v = float(np.clip(u_v, self._u_min, self._u_max))
         return self._step_with_voltage(u_v)
 
     # -------------------------------------------------------------- #
@@ -458,21 +500,25 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     def _get_obs(self) -> np.ndarray:
         """
-        6-D observation:
-        [slave_pos_error, master_pos_error, tube1_pressure_diff,
-         tube2_pressure_diff, mdot_L1, mdot_L2]
+        8-D observation:
+        [slave_pos_error, master_pos_error, P_s1, P_s2, P_m1, P_m2,
+         mdot_L1, mdot_L2]
         """
         slave_pos_error = self.state[self.IX_XS] - _X_EQ
         master_pos_error = self.state[self.IX_XM] - _X_EQ
-        tube1_pressure_diff = self.state[self.IX_PM1] - self.state[self.IX_PS2]
-        tube2_pressure_diff = self.state[self.IX_PM2] - self.state[self.IX_PS1]
+        p_s1 = self.state[self.IX_PS1]
+        p_s2 = self.state[self.IX_PS2]
+        p_m1 = self.state[self.IX_PM1]
+        p_m2 = self.state[self.IX_PM2]
         mdot_l1 = self.state[self.IX_ML1]
         mdot_l2 = self.state[self.IX_ML2]
         return np.array([
             slave_pos_error,
             master_pos_error,
-            tube1_pressure_diff,
-            tube2_pressure_diff,
+            p_s1,
+            p_s2,
+            p_m1,
+            p_m2,
             mdot_l1,
             mdot_l2,
         ], dtype=np.float32)
@@ -482,6 +528,7 @@ class TeleopEnv(gym.Env):
             "time": self.t,
             "u_v":  self.last_u_v,
             "F_h":  self.F_h,
+            "F_h_input": self.F_h_input,
             "F_e":  self.F_e,
             "env_id": self.current_env_id,
             "env_label": self.current_env_label,
@@ -501,10 +548,12 @@ class TeleopEnv(gym.Env):
         return (
             int(np.digitize(obs[0], cfg.SLAVE_POS_ERROR_BINS)),
             int(np.digitize(obs[1], cfg.MASTER_POS_ERROR_BINS)),
-            int(np.digitize(obs[2], cfg.TUBE1_DIFF_BINS)),
-            int(np.digitize(obs[3], cfg.TUBE2_DIFF_BINS)),
-            int(np.digitize(obs[4], cfg.MASS_FLOW1_BINS)),
-            int(np.digitize(obs[5], cfg.MASS_FLOW2_BINS)),
+            int(np.digitize(obs[2], cfg.SLAVE_P1_BINS)),
+            int(np.digitize(obs[3], cfg.SLAVE_P2_BINS)),
+            int(np.digitize(obs[4], cfg.MASTER_P1_BINS)),
+            int(np.digitize(obs[5], cfg.MASTER_P2_BINS)),
+            int(np.digitize(obs[6], cfg.MASS_FLOW1_BINS)),
+            int(np.digitize(obs[7], cfg.MASS_FLOW2_BINS)),
         )
 
     def get_state_dims(self) -> tuple[int, ...]:
@@ -512,8 +561,10 @@ class TeleopEnv(gym.Env):
         return (
             len(cfg.SLAVE_POS_ERROR_BINS) + 1,
             len(cfg.MASTER_POS_ERROR_BINS) + 1,
-            len(cfg.TUBE1_DIFF_BINS) + 1,
-            len(cfg.TUBE2_DIFF_BINS) + 1,
+            len(cfg.SLAVE_P1_BINS) + 1,
+            len(cfg.SLAVE_P2_BINS) + 1,
+            len(cfg.MASTER_P1_BINS) + 1,
+            len(cfg.MASTER_P2_BINS) + 1,
             len(cfg.MASS_FLOW1_BINS) + 1,
             len(cfg.MASS_FLOW2_BINS) + 1,
         )

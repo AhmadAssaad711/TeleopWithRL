@@ -1,13 +1,13 @@
 Q-learning with new observation space (10k training episodes)
 env_mode=changing_skin_fat
-total_train_episodes=10000
-total_env_steps=4203564
-state_dims=(18, 18, 13, 13, 10, 10)
-n_actions=9
-discovered_states=10320
-action_coverage=0.733764
-final_epsilon=0.050000
-mean_episode_return=-1555.90953975
-mean_episode_return_last_100=-311.49596956
-eval_tracking_rmse_m=0.01299841
-eval_transparency_rmse_w=2.50129291
+total_train_episodes=1
+total_env_steps=19
+state_dims=(18, 18, 10, 10, 10, 10, 10, 10)
+n_actions=11
+discovered_states=18
+action_coverage=0.095960
+final_epsilon=0.999700
+mean_episode_return=-461.82889014
+mean_episode_return_last_100=-461.82889014
+eval_tracking_rmse_m=0.01970700
+eval_transparency_rmse_w=1.28973018

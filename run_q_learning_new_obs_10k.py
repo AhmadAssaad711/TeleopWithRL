@@ -165,15 +165,17 @@ def _build_policy_map(agent: QLearningAgent) -> np.ndarray:
     n_slave, n_master, *_ = agent.state_dims
 
     zero_action = int(np.argmin(np.abs(cfg.V_LEVELS)))
-    z_t1 = int(np.digitize(0.0, cfg.TUBE1_DIFF_BINS))
-    z_t2 = int(np.digitize(0.0, cfg.TUBE2_DIFF_BINS))
+    z_ps1 = int(np.digitize(cfg.P_ATM, cfg.SLAVE_P1_BINS))
+    z_ps2 = int(np.digitize(cfg.P_ATM, cfg.SLAVE_P2_BINS))
+    z_pm1 = int(np.digitize(cfg.P_ATM, cfg.MASTER_P1_BINS))
+    z_pm2 = int(np.digitize(cfg.P_ATM, cfg.MASTER_P2_BINS))
     z_f1 = int(np.digitize(0.0, cfg.MASS_FLOW1_BINS))
     z_f2 = int(np.digitize(0.0, cfg.MASS_FLOW2_BINS))
 
     policy_map = np.zeros((n_slave, n_master), dtype=np.int64)
     for i in range(n_slave):
         for j in range(n_master):
-            state = (i, j, z_t1, z_t2, z_f1, z_f2)
+            state = (i, j, z_ps1, z_ps2, z_pm1, z_pm2, z_f1, z_f2)
             q_values = agent.q_values(state)
             policy_map[i, j] = _greedy_action(q_values, zero_action=zero_action)
     return policy_map
@@ -246,7 +248,7 @@ def _save_policy_plot(policy_map: np.ndarray, out_path: str) -> None:
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Greedy action index")
     cbar.set_ticks(np.arange(cfg.N_ACTIONS))
-    ax.set_title("Learned Policy Map (fixed tube/flow at zero bins)")
+    ax.set_title("Learned Policy Map (fixed pressure/flow at nominal bins)")
     ax.set_xlabel("Master position-error bin")
     ax.set_ylabel("Slave position-error bin")
     plt.tight_layout()

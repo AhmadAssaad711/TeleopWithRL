@@ -79,8 +79,8 @@ N_ENV_CONTEXTS    = len(ENV_LABELS)
 # ================================================================== #
 #  ACTION SPACE                                                      #
 # ================================================================== #
-V_LEVELS  = np.array([-10.0, -7.5, -5.0, -2.5, 0.0,
-                       2.5,   5.0,  7.5, 10.0])
+# Discrete valve-voltage actions over the requested range [0, 10] V.
+V_LEVELS  = np.linspace(0.0, 10.0, 11, dtype=np.float64)
 N_ACTIONS = len(V_LEVELS)
 
 # ================================================================== #
@@ -105,14 +105,7 @@ FE_BINS        = np.array([
       2.0,   6.0,  10.0,  15.0,  21.0,  28.0, 36.0, 45.0
 ])
 
-# Added internal plant features for RL state:
-# pressure differentials, tube flows, and spool position.
-PM_DIFF_BINS = np.array([
-    -450_000.0, -300_000.0, -200_000.0, -120_000.0, -60_000.0, -20_000.0,
-      20_000.0,   60_000.0,  120_000.0,  200_000.0,  300_000.0, 450_000.0
-])
-PS_DIFF_BINS = PM_DIFF_BINS.copy()
-
+# Added internal plant features for RL state.
 FLOW_BINS = np.array([
     -0.0040, -0.0025, -0.0015, -0.0007,
      0.0000,
@@ -125,11 +118,17 @@ SPOOL_POS_BINS = np.array([
 ])
 
 # Observation/discretization bins aligned with the environment observation:
-# [slave_pos_err, master_pos_err, tube1_dp, tube2_dp, mdot_L1, mdot_L2]
+# [slave_pos_err, master_pos_err, P_s1, P_s2, P_m1, P_m2, mdot_L1, mdot_L2]
 SLAVE_POS_ERROR_BINS = POS_ERROR_BINS.copy()
 MASTER_POS_ERROR_BINS = POS_ERROR_BINS.copy()
-TUBE1_DIFF_BINS = PM_DIFF_BINS.copy()
-TUBE2_DIFF_BINS = PM_DIFF_BINS.copy()
+PRESSURE_BINS = np.array([
+    50_000.0, 75_000.0, 100_000.0, 125_000.0,
+    150_000.0, 200_000.0, 300_000.0, 450_000.0, 600_000.0
+], dtype=np.float64)
+SLAVE_P1_BINS = PRESSURE_BINS.copy()
+SLAVE_P2_BINS = PRESSURE_BINS.copy()
+MASTER_P1_BINS = PRESSURE_BINS.copy()
+MASTER_P2_BINS = PRESSURE_BINS.copy()
 MASS_FLOW1_BINS = FLOW_BINS.copy()
 MASS_FLOW2_BINS = FLOW_BINS.copy()
 

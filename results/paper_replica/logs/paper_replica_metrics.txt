@@ -3,6 +3,6 @@ duration_s=60.00
 switch_time_s=30.00
 steps=3000
 tracking_rmse_m=0.26285495
-transparency_rmse_w=0.24220419
+transparency_rmse_w=0.34400475
 max_abs_tracking_error_m=0.27480000
 final_theta=-2.57767473,1.76606259,5.13604452,0.00614790,-0.03707749
