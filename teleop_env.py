@@ -425,7 +425,7 @@ class TeleopEnv(gym.Env):
         transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error**2
 
         # --- Reward ---
-        reward = -(track_term + effort_term + transparency_term)
+        reward = -(track_term + transparency_term)
 
         # Optional clipping
         reward = float(np.clip(reward, -cfg.REWARD_CLIP, cfg.REWARD_CLIP))
