@@ -53,11 +53,17 @@ FREE_BE   = 0.0          # Free motion [Ns/m]
 FREE_KE   = 0.0          # Free motion [N/m]
 
 # ================================================================== #
-#  MASTER ACCELERATION INPUT PROFILE                                 #
+#  MASTER REFERENCE TRAJECTORY                                       #
 # ================================================================== #
-# Note: kept legacy variable names (FH_*) for compatibility with scripts.
-FH_AMP    = 10.0         # Master-acceleration amplitude [m/s^2]
-FH_FREQ   = 0.5          # Master-acceleration frequency [Hz]
+# Master motion is prescribed by trajectory generator x_m(t)=r(t).
+REF_POS_AMP   = 0.06     # Reference position amplitude [m]
+REF_POS_FREQ  = 0.5      # Reference frequency [Hz]
+REF_POS_PHASE = 0.0      # Reference phase [rad]
+
+# Legacy aliases kept for existing scripts.
+FH_AMP   = REF_POS_AMP
+FH_FREQ  = REF_POS_FREQ
+FH_PHASE = REF_POS_PHASE
 
 # ================================================================== #
 #  SIMULATION                                                        #
@@ -144,10 +150,10 @@ POS_ERR_NORM_CLIP = 1.0
 # Power normalization heuristics for reward scaling.
 V_MAX_GEOM = L_CYL / RL_DT
 F_E_MAX_THEORETICAL = SKIN_KE * (L_CYL / 2.0) + SKIN_BE * V_MAX_GEOM
-# Rough reflected-force estimate from Eq. (2): m*a + beta*v + pressure term.
-F_H_REF_EST = MP * FH_AMP + BETA * V_MAX_GEOM + F_E_MAX_THEORETICAL
+# Conservative reflected-force estimate from Eq. (2): pressure + inertia + damping.
+F_H_REF_EST = F_E_MAX_THEORETICAL + MP * (2 * np.pi * REF_POS_FREQ) ** 2 * REF_POS_AMP + BETA * V_MAX_GEOM
 MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + F_H_REF_EST)
-# Practical scale for learning (about 95th percentile under random policy).
+# Practical scale for learning.
 MAX_POWER_ERROR = 10.0
 
 # Reward weights
@@ -173,8 +179,8 @@ MRAC_G1_GAIN  = 1.0
 # ================================================================== #
 PAPER_EPISODE_DURATION = 60.0
 PAPER_ENV_SWITCH_TIME  = 30.0
-# Legacy name kept; interpreted as master-acceleration amplitude.
-PAPER_FORCE_AMP        = 10.0
+# Legacy names kept; interpreted as reference trajectory parameters.
+PAPER_FORCE_AMP        = 0.06
 PAPER_FORCE_FREQ       = 0.5
 PAPER_FORCE_PHASE      = 0.0
 PAPER_RESULTS_DIR      = "paper_replica"

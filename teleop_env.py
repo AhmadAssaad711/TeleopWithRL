@@ -37,9 +37,9 @@ Dynamics equations (numbers refer to paper):
   (11) Tube friction    ΔP_friction = 32·μ·ṁ_L·L / (ρ·A_t·D_t²)
 
 Input semantics in this implementation:
-  - The external signal is a prescribed master acceleration profile a_m(t).
-  - F_h is then computed as the reflected force from Eq. (2):
-      F_h = (P_m1 - P_m2)·A_p - m_p·a_m - β·ẋ_m
+  - The master motion is prescribed by a bounded reference trajectory x_m(t)=r(t).
+  - F_h is computed from Eq. (2) using trajectory derivatives and master pressures:
+      F_h = (P_m1 - P_m2)·A_p - m_p·r¨(t) - β·r˙(t)
 """
 
 from __future__ import annotations
@@ -109,12 +109,28 @@ def _iso6358(opening: float, P_u: float, P_d: float) -> float:
     return base  # choked
 
 
+def _bounded_ref_amp(ref_amp: float) -> float:
+    max_amp = max(0.0, (_LCYL * 0.5) - 1e-4)
+    return _clamp(abs(ref_amp), 0.0, max_amp)
+
+
+def _master_reference(t: float, ref_amp: float, ref_freq: float, ref_phase: float) -> tuple[float, float, float]:
+    amp = _bounded_ref_amp(ref_amp)
+    omega = _TWO_PI * ref_freq
+    phase = omega * t + ref_phase
+    s = math.sin(phase)
+    c = math.cos(phase)
+    x_ref = _clamp(_X_EQ + amp * s, _XMIN, _XMAX)
+    v_ref = amp * omega * c
+    a_ref = -amp * omega * omega * s
+    return x_ref, v_ref, a_ref
+
+
 def _derivatives(s: list[float], t: float, u_v: float,
-                 am_amp: float, am_freq: float, am_phase: float,
+                 ref_amp: float, ref_freq: float, ref_phase: float,
                  Be: float, Ke: float) -> list[float]:
     """12-D derivative vector — pure Python scalars, no numpy."""
-    x_m  = _clamp(s[0], _XMIN, _XMAX)
-    v_m  = s[1]
+    x_m, v_m, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
     x_s  = _clamp(s[2], _XMIN, _XMAX)
     v_s  = s[3]
     P_m1 = s[4] if s[4] > _PMIN else _PMIN
@@ -132,11 +148,7 @@ def _derivatives(s: list[float], t: float, u_v: float,
     V_s1 = _VMD + x_s * _AP
     V_s2 = _VMD + (_LCYL - x_s) * _AP
 
-    # Prescribed master acceleration signal (external input)
-    a_m_signal = am_amp * math.sin(_TWO_PI * am_freq * t + am_phase)
-
-    # (A) Equations of motion  (Eqs 2, 3)
-    a_m = a_m_signal
+    # (A) Equations of motion  (Eq 3 for slave; master is prescribed reference)
     delta_xs = x_s - _X_EQ
     a_s = ((P_s1 - P_s2) * _AP - (_BETA + Be) * v_s - Ke * delta_xs) / _MP
 
@@ -169,20 +181,23 @@ def _derivatives(s: list[float], t: float, u_v: float,
     d_mdot_L1 = _TUBE_INERTANCE * (P_m1 - P_s2 - _FRICTION_COEFF * mdot_L1)
     d_mdot_L2 = _TUBE_INERTANCE * (P_m2 - P_s1 - _FRICTION_COEFF * mdot_L2)
 
-    return [v_m, a_m, v_s, a_s,
+    return [0.0, 0.0, v_s, a_s,
             dP_m1, dP_m2, dP_s1, dP_s2,
             d_mdot_L1, d_mdot_L2, dxv, dvv]
 
 
 def _rk4_substeps(state: np.ndarray, t0: float, u_v: float,
-                   am_amp: float, am_freq: float, am_phase: float,
+                   ref_amp: float, ref_freq: float, ref_phase: float,
                    Be: float, Ke: float) -> tuple[np.ndarray, float]:
     """Run SUB_STEPS RK4 integration steps.  Returns (new_state, new_t)."""
     # Convert to plain-Python list for speed
     s = state.tolist()
     dt = _DT
-    args = (u_v, am_amp, am_freq, am_phase, Be, Ke)
+    args = (u_v, ref_amp, ref_freq, ref_phase, Be, Ke)
     t = t0
+    x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+    s[0] = x_ref
+    s[1] = v_ref
 
     for _ in range(_SUB_STEPS):
         k1 = _derivatives(s, t, *args)
@@ -218,6 +233,9 @@ def _rk4_substeps(state: np.ndarray, t0: float, u_v: float,
             s[3] = 0.0
 
         t += dt
+        x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+        s[0] = x_ref
+        s[1] = v_ref
 
     return np.array(s, dtype=np.float64), t
 
@@ -341,13 +359,22 @@ class TeleopEnv(gym.Env):
         self.t = 0.0
         self.step_count = 0
 
-        # --- Prescribed master-acceleration profile (deterministic setup) ---
-        self.fh_amp   = cfg.FH_AMP
-        self.fh_freq  = cfg.FH_FREQ
-        self.fh_phase = 0.0
+        # --- Prescribed master-reference trajectory x_m(t)=r(t) ----------
+        self.ref_amp   = float(cfg.REF_POS_AMP)
+        self.ref_freq  = float(cfg.REF_POS_FREQ)
+        self.ref_phase = float(cfg.REF_POS_PHASE)
+        # Legacy aliases kept so existing scripts can still set fh_*.
+        self.fh_amp = self.ref_amp
+        self.fh_freq = self.ref_freq
+        self.fh_phase = self.ref_phase
 
         # --- Environment mode ----------------------------------------
         self._update_environment_mode()
+
+        # --- Initialize master reference state -----------------------
+        x_ref0, v_ref0, _ = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
+        self.state[self.IX_XM] = x_ref0
+        self.state[self.IX_VM] = v_ref0
 
         # --- Forces (persisted for observation / logging) -----------
         self.F_h = 0.0
@@ -380,26 +407,38 @@ class TeleopEnv(gym.Env):
         self.last_u_v = u_v
         self._update_environment_mode()
 
+        # Sync legacy aliases with reference trajectory parameters.
+        self.ref_amp = float(getattr(self, "fh_amp", self.ref_amp))
+        self.ref_freq = float(getattr(self, "fh_freq", self.ref_freq))
+        self.ref_phase = float(getattr(self, "fh_phase", self.ref_phase))
+        self.ref_amp = _bounded_ref_amp(self.ref_amp)
+        self.fh_amp = self.ref_amp
+        self.fh_freq = self.ref_freq
+        self.fh_phase = self.ref_phase
+
         # ── Physics integration (pure-Python fast kernel) ────────
         self.state, self.t = _rk4_substeps(
             self.state, self.t, u_v,
-            self.fh_amp, self.fh_freq, self.fh_phase,
+            self.ref_amp, self.ref_freq, self.ref_phase,
             self.Be, self.Ke,
         )
 
         self.step_count += 1
+
+        # Enforce exact master reference values at RL sample time.
+        x_ref, v_ref, a_ref = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
+        self.state[self.IX_XM] = x_ref
+        self.state[self.IX_VM] = v_ref
 
         # --- Extract quantities ----------------------------------
         x_m, v_m = self.state[self.IX_XM], self.state[self.IX_VM]
         x_s, v_s = self.state[self.IX_XS], self.state[self.IX_VS]
         pos_error = x_m - x_s
 
-        # Update stored excitation/forces:
-        # - a_m_signal is the prescribed master-acceleration input.
+        # Update stored signal/forces:
+        # - a_m_signal is r¨(t).
         # - F_h is reflected force from Eq. (2).
-        self.a_m_signal = float(
-            self.fh_amp * np.sin(2 * np.pi * self.fh_freq * self.t + self.fh_phase)
-        )
+        self.a_m_signal = float(a_ref)
         self.F_h = float(
             (self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP
             - _MP * self.a_m_signal
@@ -425,7 +464,7 @@ class TeleopEnv(gym.Env):
         transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error**2
 
         # --- Reward ---
-        reward = -(track_term + transparency_term)
+        reward = -(track_term + effort_term + transparency_term)
 
         # Optional clipping
         reward = float(np.clip(reward, -cfg.REWARD_CLIP, cfg.REWARD_CLIP))

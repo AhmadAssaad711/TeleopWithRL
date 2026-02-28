@@ -1,4 +1,4 @@
-Paper-replica simulation metrics
+MRAC on TeleopEnv metrics
 duration_s=60.00
 switch_time_s=30.00
 steps=3000
