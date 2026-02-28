@@ -21,6 +21,7 @@ OUT_DIR_NAME = os.path.join(cfg.RL_CHANGING_DIR, "rl_new_obs_10k_episodes")
 MOVING_AVG_WINDOW = 200
 TRACKER_WINDOW = 100
 PRINT_EVERY = 100
+POLICY_TEST_STEPS = 100
 
 
 def _mk_dirs() -> dict[str, str]:
@@ -235,6 +236,91 @@ def _save_transparency_plot(train_log: dict[str, np.ndarray], out_path: str) -> 
     plt.close(fig)
 
 
+def _save_training_metrics_plot(train_log: dict[str, np.ndarray], out_path: str) -> None:
+    rewards = train_log["episode_returns"]
+    trk_mm = train_log["episode_tracking_rmse"] * 1000.0
+    trn = train_log["episode_transparency_rmse"]
+    episodes = np.arange(1, rewards.size + 1, dtype=np.int64)
+
+    rewards_ma = _moving_average(rewards, MOVING_AVG_WINDOW)
+    trk_ma = _moving_average(trk_mm, MOVING_AVG_WINDOW)
+    trn_ma = _moving_average(trn, MOVING_AVG_WINDOW)
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 11), sharex=True)
+
+    axes[0].plot(episodes, rewards, lw=0.8, alpha=0.30, color="tab:blue", label="Reward")
+    axes[0].plot(episodes, rewards_ma, lw=1.8, color="tab:red", label=f"MA({MOVING_AVG_WINDOW})")
+    axes[0].set_ylabel("Reward")
+    axes[0].set_title("Training: Reward vs Episode")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(episodes, trk_mm, lw=0.8, alpha=0.30, color="tab:green", label="Tracking error")
+    axes[1].plot(episodes, trk_ma, lw=1.8, color="tab:olive", label=f"MA({MOVING_AVG_WINDOW})")
+    axes[1].set_ylabel("Error [mm]")
+    axes[1].set_title("Training: Tracking Error vs Episode")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+
+    axes[2].plot(episodes, trn, lw=0.8, alpha=0.30, color="tab:purple", label="Transparency error")
+    axes[2].plot(episodes, trn_ma, lw=1.8, color="tab:pink", label=f"MA({MOVING_AVG_WINDOW})")
+    axes[2].set_xlabel("Episode")
+    axes[2].set_ylabel("Error [W]")
+    axes[2].set_title("Training: Transparency Error vs Episode")
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend()
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_policy_rollout_plots(history: dict, out_dir: str) -> None:
+    t = np.array(history.get("time", []), dtype=np.float64)
+    x_m = np.array(history.get("x_m", []), dtype=np.float64) * 1000.0
+    x_s = np.array(history.get("x_s", []), dtype=np.float64) * 1000.0
+    pe = np.array(history.get("pos_error", []), dtype=np.float64) * 1000.0
+    tr = np.array(history.get("transparency_error", []), dtype=np.float64)
+    if t.size == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    ax.plot(t, x_m, lw=1.8, color="tab:blue", label="Master position")
+    ax.plot(t, x_s, lw=1.8, color="tab:orange", label="Slave position")
+    ax.set_title(f"Learned Policy Rollout ({t.size} steps): Master vs Slave Position")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Position [mm]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "policy_rollout_positions_100_steps.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 4.2))
+    ax.plot(t, pe, lw=1.8, color="tab:red", label="Tracking error (x_m - x_s)")
+    ax.axhline(0.0, color="gray", lw=0.8)
+    ax.set_title(f"Learned Policy Rollout ({t.size} steps): Tracking Error")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Error [mm]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "policy_rollout_error_100_steps.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 4.2))
+    ax.plot(t, tr, lw=1.8, color="tab:purple", label="Transparency error")
+    ax.axhline(0.0, color="gray", lw=0.8)
+    ax.set_title(f"Learned Policy Rollout ({t.size} steps): Transparency Error")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Error [W]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "policy_rollout_transparency_error_100_steps.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _save_policy_plot(policy_map: np.ndarray, out_path: str) -> None:
     fig, ax = plt.subplots(figsize=(8.5, 7.5))
     im = ax.imshow(
@@ -256,6 +342,24 @@ def _save_policy_plot(policy_map: np.ndarray, out_path: str) -> None:
     plt.close(fig)
 
 
+def _evaluate_greedy_rollout(agent: QLearningAgent, env_mode: str, max_steps: int) -> dict:
+    env = TeleopEnv(env_mode=env_mode)
+    zero_action = int(np.argmin(np.abs(cfg.V_LEVELS)))
+
+    obs, _ = env.reset(seed=123)
+    state = env.discretise_obs(obs)
+    done = False
+    steps = 0
+    while not done and steps < max_steps:
+        q_values = agent.q_values(state)
+        action = _greedy_action(q_values, zero_action=zero_action)
+        obs, _, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        state = env.discretise_obs(obs)
+        steps += 1
+    return env.render() or {}
+
+
 def run_q_learning_new_obs_10k(total_episodes: int = TOTAL_TRAIN_EPISODES) -> None:
     print(
         f"Starting Q-learning training with new observation space | "
@@ -268,6 +372,9 @@ def run_q_learning_new_obs_10k(total_episodes: int = TOTAL_TRAIN_EPISODES) -> No
         print_every=PRINT_EVERY,
     )
     eval_history = _evaluate_greedy_episode(agent, env_mode=ENV_MODE)
+    rollout_100_history = _evaluate_greedy_rollout(
+        agent, env_mode=ENV_MODE, max_steps=POLICY_TEST_STEPS
+    )
     policy_map = _build_policy_map(agent)
 
     model_path = os.path.join(paths["models"], "q_table_10k_episodes.npy")
@@ -299,9 +406,17 @@ def run_q_learning_new_obs_10k(total_episodes: int = TOTAL_TRAIN_EPISODES) -> No
         train_log=train_log,
         out_path=os.path.join(paths["plots"], "transparency_plot.png"),
     )
+    _save_training_metrics_plot(
+        train_log=train_log,
+        out_path=os.path.join(paths["plots"], "training_metrics_over_time.png"),
+    )
     _save_policy_plot(
         policy_map=policy_map,
         out_path=os.path.join(paths["plots"], "learned_policy_plot.png"),
+    )
+    _save_policy_rollout_plots(
+        history=rollout_100_history,
+        out_dir=paths["plots"],
     )
 
     pe_eval = np.array(eval_history.get("pos_error", []), dtype=np.float64)
