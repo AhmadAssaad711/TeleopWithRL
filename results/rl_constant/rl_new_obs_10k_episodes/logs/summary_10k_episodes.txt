@@ -1,0 +1,14 @@
+Q-learning with new observation space (10k training episodes)
+env_mode=constant_skin
+out_dir_name=rl_constant\rl_new_obs_10k_episodes
+total_train_episodes=1
+total_env_steps=500
+state_dims=(18, 18, 10, 10, 10, 10, 10, 10)
+n_actions=11
+discovered_states=72
+action_coverage=0.357323
+final_epsilon=0.999700
+mean_episode_return=-8454.57992950
+mean_episode_return_last_100=-8454.57992950
+eval_tracking_rmse_m=0.02225738
+eval_transparency_rmse_w=0.94878752

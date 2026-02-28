@@ -16,16 +16,23 @@ from teleop_env import TeleopEnv
 
 
 TOTAL_TRAIN_EPISODES = 10_000
-ENV_MODE = cfg.ENV_MODE_CHANGING
-OUT_DIR_NAME = os.path.join(cfg.RL_CHANGING_DIR, "rl_new_obs_10k_episodes")
+DEFAULT_ENV_MODE = cfg.ENV_MODE_CHANGING
 MOVING_AVG_WINDOW = 200
 TRACKER_WINDOW = 100
 PRINT_EVERY = 100
 POLICY_TEST_STEPS = 100
 
 
-def _mk_dirs() -> dict[str, str]:
-    base = os.path.join(os.path.dirname(__file__), cfg.RESULTS_ROOT_DIR, OUT_DIR_NAME)
+def _default_out_dir_for_env_mode(env_mode: str) -> str:
+    if env_mode == cfg.ENV_MODE_CHANGING:
+        return os.path.join(cfg.RL_CHANGING_DIR, "rl_new_obs_10k_episodes")
+    if env_mode == cfg.ENV_MODE_CONSTANT:
+        return os.path.join(cfg.RL_CONSTANT_DIR, "rl_new_obs_10k_episodes")
+    raise ValueError(f"Unsupported env_mode: {env_mode}")
+
+
+def _mk_dirs(out_dir_name: str) -> dict[str, str]:
+    base = os.path.join(os.path.dirname(__file__), cfg.RESULTS_ROOT_DIR, out_dir_name)
     paths = {
         "base": base,
         "models": os.path.join(base, "models"),
@@ -360,20 +367,25 @@ def _evaluate_greedy_rollout(agent: QLearningAgent, env_mode: str, max_steps: in
     return env.render() or {}
 
 
-def run_q_learning_new_obs_10k(total_episodes: int = TOTAL_TRAIN_EPISODES) -> None:
+def run_q_learning_new_obs_10k(
+    total_episodes: int = TOTAL_TRAIN_EPISODES,
+    env_mode: str = DEFAULT_ENV_MODE,
+    out_dir_name: str | None = None,
+) -> None:
+    selected_out_dir = out_dir_name or _default_out_dir_for_env_mode(env_mode)
     print(
         f"Starting Q-learning training with new observation space | "
-        f"episodes={total_episodes} | env_mode={ENV_MODE}"
+        f"episodes={total_episodes} | env_mode={env_mode}"
     )
-    paths = _mk_dirs()
+    paths = _mk_dirs(selected_out_dir)
     agent, train_log = _train_for_episodes(
         total_episodes=total_episodes,
-        env_mode=ENV_MODE,
+        env_mode=env_mode,
         print_every=PRINT_EVERY,
     )
-    eval_history = _evaluate_greedy_episode(agent, env_mode=ENV_MODE)
+    eval_history = _evaluate_greedy_episode(agent, env_mode=env_mode)
     rollout_100_history = _evaluate_greedy_rollout(
-        agent, env_mode=ENV_MODE, max_steps=POLICY_TEST_STEPS
+        agent, env_mode=env_mode, max_steps=POLICY_TEST_STEPS
     )
     policy_map = _build_policy_map(agent)
 
@@ -429,7 +441,8 @@ def run_q_learning_new_obs_10k(total_episodes: int = TOTAL_TRAIN_EPISODES) -> No
     summary_path = os.path.join(paths["logs"], "summary_10k_episodes.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write("Q-learning with new observation space (10k training episodes)\n")
-        f.write(f"env_mode={ENV_MODE}\n")
+        f.write(f"env_mode={env_mode}\n")
+        f.write(f"out_dir_name={selected_out_dir}\n")
         f.write(f"total_train_episodes={total_episodes}\n")
         f.write(f"total_env_steps={int(train_log['total_steps'][0])}\n")
         f.write(f"state_dims={agent.state_dims}\n")

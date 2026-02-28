@@ -1,5 +1,6 @@
 Q-learning with new observation space (10k training episodes)
 env_mode=changing_skin_fat
+out_dir_name=rl_changing\rl_new_obs_10k_episodes
 total_train_episodes=1
 total_env_steps=500
 state_dims=(18, 18, 10, 10, 10, 10, 10, 10)
