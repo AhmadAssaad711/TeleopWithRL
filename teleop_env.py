@@ -36,10 +36,10 @@ Dynamics equations (numbers refer to paper):
   (10) Tube inertance   dṁ_L/dt = (A_t/L)·(P_up − P_down − ΔP_friction)
   (11) Tube friction    ΔP_friction = 32·μ·ṁ_L·L / (ρ·A_t·D_t²)
 
-Force semantics in this implementation:
-  - F_h_input: prescribed sinusoidal human excitation used in the master EOM.
-  - F_h: reflected force at the operator, computed from Eq. (2):
-         F_h = (P_m1 - P_m2)·A_p - m_p·ẍ_m - β·ẋ_m
+Input semantics in this implementation:
+  - The external signal is a prescribed master acceleration profile a_m(t).
+  - F_h is then computed as the reflected force from Eq. (2):
+      F_h = (P_m1 - P_m2)·A_p - m_p·a_m - β·ẋ_m
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def _iso6358(opening: float, P_u: float, P_d: float) -> float:
 
 
 def _derivatives(s: list[float], t: float, u_v: float,
-                 fh_amp: float, fh_freq: float, fh_phase: float,
+                 am_amp: float, am_freq: float, am_phase: float,
                  Be: float, Ke: float) -> list[float]:
     """12-D derivative vector — pure Python scalars, no numpy."""
     x_m  = _clamp(s[0], _XMIN, _XMAX)
@@ -132,11 +132,11 @@ def _derivatives(s: list[float], t: float, u_v: float,
     V_s1 = _VMD + x_s * _AP
     V_s2 = _VMD + (_LCYL - x_s) * _AP
 
-    # Prescribed human excitation (input force at master side)
-    F_h_input = fh_amp * math.sin(_TWO_PI * fh_freq * t + fh_phase)
+    # Prescribed master acceleration signal (external input)
+    a_m_signal = am_amp * math.sin(_TWO_PI * am_freq * t + am_phase)
 
     # (A) Equations of motion  (Eqs 2, 3)
-    a_m = ((P_m1 - P_m2) * _AP - _BETA * v_m - F_h_input) / _MP
+    a_m = a_m_signal
     delta_xs = x_s - _X_EQ
     a_s = ((P_s1 - P_s2) * _AP - (_BETA + Be) * v_s - Ke * delta_xs) / _MP
 
@@ -175,13 +175,13 @@ def _derivatives(s: list[float], t: float, u_v: float,
 
 
 def _rk4_substeps(state: np.ndarray, t0: float, u_v: float,
-                   fh_amp: float, fh_freq: float, fh_phase: float,
+                   am_amp: float, am_freq: float, am_phase: float,
                    Be: float, Ke: float) -> tuple[np.ndarray, float]:
     """Run SUB_STEPS RK4 integration steps.  Returns (new_state, new_t)."""
     # Convert to plain-Python list for speed
     s = state.tolist()
     dt = _DT
-    args = (u_v, fh_amp, fh_freq, fh_phase, Be, Ke)
+    args = (u_v, am_amp, am_freq, am_phase, Be, Ke)
     t = t0
 
     for _ in range(_SUB_STEPS):
@@ -341,7 +341,7 @@ class TeleopEnv(gym.Env):
         self.t = 0.0
         self.step_count = 0
 
-        # --- Constant force profile (deterministic training setup) ---
+        # --- Prescribed master-acceleration profile (deterministic setup) ---
         self.fh_amp   = cfg.FH_AMP
         self.fh_freq  = cfg.FH_FREQ
         self.fh_phase = 0.0
@@ -351,7 +351,7 @@ class TeleopEnv(gym.Env):
 
         # --- Forces (persisted for observation / logging) -----------
         self.F_h = 0.0
-        self.F_h_input = 0.0
+        self.a_m_signal = 0.0
         self.F_e = 0.0
         self.last_u_v = 0.0
 
@@ -360,7 +360,7 @@ class TeleopEnv(gym.Env):
             "time": [], "x_m": [], "x_s": [],
             "v_m": [], "v_s": [],
             "P_m1": [], "P_m2": [], "P_s1": [], "P_s2": [],
-            "F_h": [], "F_h_input": [], "F_e": [], "u_v": [], "x_v": [],
+            "F_h": [], "a_m_signal": [], "F_e": [], "u_v": [], "x_v": [],
             "env_id": [], "env_label": [],
             "pos_error": [], "transparency_error": [],
             "reward_track": [], "reward_effort": [], "reward_transparency": [],
@@ -379,7 +379,6 @@ class TeleopEnv(gym.Env):
     def _step_with_voltage(self, u_v: float):
         self.last_u_v = u_v
         self._update_environment_mode()
-        v_m_prev = float(self.state[self.IX_VM])
 
         # ── Physics integration (pure-Python fast kernel) ────────
         self.state, self.t = _rk4_substeps(
@@ -395,16 +394,15 @@ class TeleopEnv(gym.Env):
         x_s, v_s = self.state[self.IX_XS], self.state[self.IX_VS]
         pos_error = x_m - x_s
 
-        # Update stored forces:
-        # - F_h_input drives master dynamics.
+        # Update stored excitation/forces:
+        # - a_m_signal is the prescribed master-acceleration input.
         # - F_h is reflected force from Eq. (2).
-        self.F_h_input = float(
+        self.a_m_signal = float(
             self.fh_amp * np.sin(2 * np.pi * self.fh_freq * self.t + self.fh_phase)
         )
-        a_m_est = float((v_m - v_m_prev) / cfg.RL_DT)
         self.F_h = float(
             (self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP
-            - _MP * a_m_est
+            - _MP * self.a_m_signal
             - _BETA * v_m
         )
         delta_xs = x_s - _X_EQ
@@ -445,7 +443,7 @@ class TeleopEnv(gym.Env):
             self._history["P_s1"].append(self.state[self.IX_PS1])
             self._history["P_s2"].append(self.state[self.IX_PS2])
             self._history["F_h"].append(self.F_h)
-            self._history["F_h_input"].append(self.F_h_input)
+            self._history["a_m_signal"].append(self.a_m_signal)
             self._history["F_e"].append(self.F_e)
             self._history["u_v"].append(u_v)
             self._history["x_v"].append(self.state[self.IX_XV])
@@ -528,7 +526,7 @@ class TeleopEnv(gym.Env):
             "time": self.t,
             "u_v":  self.last_u_v,
             "F_h":  self.F_h,
-            "F_h_input": self.F_h_input,
+            "a_m_signal": self.a_m_signal,
             "F_e":  self.F_e,
             "env_id": self.current_env_id,
             "env_label": self.current_env_label,

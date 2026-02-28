@@ -53,10 +53,11 @@ FREE_BE   = 0.0          # Free motion [Ns/m]
 FREE_KE   = 0.0          # Free motion [N/m]
 
 # ================================================================== #
-#  HUMAN OPERATOR FORCE MODEL                                        #
+#  MASTER ACCELERATION INPUT PROFILE                                 #
 # ================================================================== #
-FH_AMP    = 10.0         # Force amplitude [N]
-FH_FREQ   = 0.5          # Force frequency [Hz]
+# Note: kept legacy variable names (FH_*) for compatibility with scripts.
+FH_AMP    = 10.0         # Master-acceleration amplitude [m/s^2]
+FH_FREQ   = 0.5          # Master-acceleration frequency [Hz]
 
 # ================================================================== #
 #  SIMULATION                                                        #
@@ -140,13 +141,12 @@ POS_ERROR_FAIL_THRESHOLD = 0.24
 MAX_POSITION_ERROR = POS_ERROR_FAIL_THRESHOLD
 POS_ERR_NORM_CLIP = 1.0
 
-# Power normalization from model parameters:
-# |F_e * v_m - F_h * v_s| <= |F_e|*|v_m| + |F_h|*|v_s|
-# with |F_e| <= SKIN_KE*(L_CYL/2) + SKIN_BE*V_MAX_GEOM,
-# |F_h| <= FH_AMP, V_MAX_GEOM = L_CYL/RL_DT.
+# Power normalization heuristics for reward scaling.
 V_MAX_GEOM = L_CYL / RL_DT
 F_E_MAX_THEORETICAL = SKIN_KE * (L_CYL / 2.0) + SKIN_BE * V_MAX_GEOM
-MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + FH_AMP)
+# Rough reflected-force estimate from Eq. (2): m*a + beta*v + pressure term.
+F_H_REF_EST = MP * FH_AMP + BETA * V_MAX_GEOM + F_E_MAX_THEORETICAL
+MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + F_H_REF_EST)
 # Practical scale for learning (about 95th percentile under random policy).
 MAX_POWER_ERROR = 10.0
 
@@ -173,6 +173,7 @@ MRAC_G1_GAIN  = 1.0
 # ================================================================== #
 PAPER_EPISODE_DURATION = 60.0
 PAPER_ENV_SWITCH_TIME  = 30.0
+# Legacy name kept; interpreted as master-acceleration amplitude.
 PAPER_FORCE_AMP        = 10.0
 PAPER_FORCE_FREQ       = 0.5
 PAPER_FORCE_PHASE      = 0.0
