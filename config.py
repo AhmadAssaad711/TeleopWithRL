@@ -86,8 +86,8 @@ N_ENV_CONTEXTS    = len(ENV_LABELS)
 # ================================================================== #
 #  ACTION SPACE                                                      #
 # ================================================================== #
-# Discrete valve-voltage actions over the requested range [0, 10] V.
-V_LEVELS  = np.linspace(0.0, 10.0, 11, dtype=np.float64)
+# Discrete valve-voltage actions over the range [-5, 5] V.
+V_LEVELS  = np.linspace(-5.0, 5.0, 11, dtype=np.float64)
 N_ACTIONS = len(V_LEVELS)
 
 # ================================================================== #
@@ -140,11 +140,45 @@ MASS_FLOW1_BINS = FLOW_BINS.copy()
 MASS_FLOW2_BINS = FLOW_BINS.copy()
 
 # ================================================================== #
+#  STATE DISCRETISATION (reduced 4-D tabular Q-learning)             #
+# ================================================================== #
+# State: (tracking_error, velocity_error, slave_pdiff, master_pdiff)
+REDUCED_TRACKING_ERROR_BINS = np.array([
+    -0.06, -0.04, -0.025, -0.015, -0.008, -0.003,
+     0.003,  0.008,  0.015,  0.025,  0.04,  0.06
+])
+REDUCED_VELOCITY_ERROR_BINS = np.array([
+    -0.40, -0.25, -0.15, -0.08, -0.03,
+     0.03,  0.08,  0.15,  0.25,  0.40
+])
+REDUCED_SLAVE_PRESSURE_DIFF_BINS = np.array([
+    -200_000, -120_000, -60_000, -25_000, -8_000,
+       8_000,   25_000,  60_000, 120_000, 200_000
+], dtype=np.float64)
+REDUCED_MASTER_PRESSURE_DIFF_BINS = np.array([
+    -200_000, -120_000, -60_000, -25_000, -8_000,
+       8_000,   25_000,  60_000, 120_000, 200_000
+], dtype=np.float64)
+
+# ================================================================== #
+#  OBSERVATION NORMALIZATION (for DQN / neural-net agents)           #
+# ================================================================== #
+# Each feature is divided by its scale so the observation lives in
+# approximately [-1, 1].  Scales are based on physical operating range.
+OBS_SCALE_POS      = L_CYL / 2.0              # ~0.1375 m  (half-stroke)
+OBS_SCALE_VEL      = 2 * np.pi * REF_POS_FREQ * REF_POS_AMP  # ~0.188 m/s
+OBS_SCALE_PRESSURE = P_SUPPLY                  # 600 kPa
+OBS_SCALE_FLOW     = 0.004                     # kg/s  (matches bin extremes)
+
+# ================================================================== #
 #  TERMINATION + REWARD SCALING                                      #
 # ================================================================== #
-POS_ERROR_FAIL_THRESHOLD = 0.24
+# Terminate when tracking error exceeds 3× the reference amplitude.
+POS_ERROR_FAIL_THRESHOLD = 3.0 * REF_POS_AMP          # 0.18 m
 
-MAX_POSITION_ERROR = POS_ERROR_FAIL_THRESHOLD
+# Reward normalisation: use the reference amplitude so that an error
+# equal to the full oscillation swing maps to norm_pos_error ≈ 1.
+MAX_POSITION_ERROR = REF_POS_AMP                       # 0.06 m
 POS_ERR_NORM_CLIP = 1.0
 
 # Power normalization heuristics for reward scaling.
@@ -153,13 +187,12 @@ F_E_MAX_THEORETICAL = SKIN_KE * (L_CYL / 2.0) + SKIN_BE * V_MAX_GEOM
 # Conservative reflected-force estimate from Eq. (2): pressure + inertia + damping.
 F_H_REF_EST = F_E_MAX_THEORETICAL + MP * (2 * np.pi * REF_POS_FREQ) ** 2 * REF_POS_AMP + BETA * V_MAX_GEOM
 MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + F_H_REF_EST)
-# Practical scale for learning.
-MAX_POWER_ERROR = 10.0
+# Practical scale: based on observed range (~17 W peak with random actions).
+MAX_POWER_ERROR = 20.0
 
 # Reward weights
 ALPHA_TRACKING = 40.0
 GAMMA_EFFORT   = 0.01
-REWARD_CLIP    = 50.0
 BETA_TRANSPARENCY = 5.0
 
 # ================================================================== #
@@ -193,15 +226,36 @@ DISCOUNT_FACTOR = 0.99
 EPSILON_START   = 1.0
 EPSILON_END     = 0.05
 NUM_EPISODES    = 10_000
-EPSILON_DECAY   = (EPSILON_END / EPSILON_START) ** (1.0 / NUM_EPISODES)
-EVAL_EVERY      = 500
-EVAL_EPISODES   = 50
+_EPSILON_HORIZON = 8_000
+EPSILON_DECAY   = (EPSILON_END / EPSILON_START) ** (1.0 / _EPSILON_HORIZON)
+EVAL_EVERY      = 100
+EVAL_EPISODES   = 10
+
+# ================================================================== #
+#  DQN HYPER-PARAMETERS                                               #
+# ================================================================== #
+DQN_LEARNING_RATE          = 1e-3
+DQN_DISCOUNT_FACTOR        = 0.99
+DQN_REPLAY_BUFFER_SIZE     = 100_000
+DQN_BATCH_SIZE             = 64
+DQN_TARGET_UPDATE_FREQ     = 500       # gradient steps between target-net syncs
+DQN_HIDDEN_SIZES           = (256, 256)
+DQN_EPSILON_START          = 1.0
+DQN_EPSILON_END            = 0.05
+DQN_NUM_EPISODES           = 10_000
+DQN_EPSILON_DECAY_EPISODES = 8_000
+DQN_EVAL_EVERY             = 100
+DQN_EVAL_EPISODES          = 5
+DQN_MIN_REPLAY_SIZE        = 1_000
+DQN_GRAD_CLIP              = 1.0
 
 # ================================================================== #
 #  RESULT FOLDER LAYOUT                                              #
 # ================================================================== #
-RESULTS_ROOT_DIR  = "results"
-RL_CONSTANT_DIR   = "rl_constant"
-RL_CHANGING_DIR   = "rl_changing"
-MRAC_RESULTS_DIR  = "mrac"
-COMPARE_RESULTS_DIR = "comparisons"
+RESULTS_ROOT_DIR        = "results"
+DQN_CONSTANT_DIR        = "dqn_constant"
+DQN_CHANGING_DIR        = "dqn_changing"
+Q_LEARNING_CONSTANT_DIR = "q_learning_constant"
+Q_LEARNING_CHANGING_DIR = "q_learning_changing"
+MRAC_RESULTS_DIR        = "mrac"
+COMPARE_RESULTS_DIR     = "comparisons"

@@ -1,4 +1,4 @@
-"""Run benchmark for MRAC, RL-constant, and RL-changing agents."""
+"""Run benchmark for DQN, Q-learning, and MRAC agents."""
 
 import os
 import sys

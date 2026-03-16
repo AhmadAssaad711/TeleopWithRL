@@ -15,15 +15,15 @@ Internal state (12-D, continuous):
   [x_m, v_m, x_s, v_s, P_m1, P_m2, P_s1, P_s2,
    ṁ_L1, ṁ_L2, x_v, v_v]
 
-Observation (8-D):
-  [slave_pos_error, master_pos_error, P_s1, P_s2, P_m1, P_m2,
-   mdot_L1, mdot_L2]
+Observation (10-D, normalised):
+  [slave_pos_from_eq, master_pos_from_eq, v_s, v_m,
+   P_s1, P_s2, P_m1, P_m2, mdot_L1, mdot_L2]
 
 Discrete RL state (tabular Q-learning):
   same feature set as the observation above
 
 Action:
-  Continuous servo-valve voltage u_v ∈ [0, 10] V.
+  Continuous servo-valve voltage u_v ∈ [-5, 5] V.
   (For backward compatibility, integer action indices into V_LEVELS are also accepted.)
 
 Dynamics equations (numbers refer to paper):
@@ -288,26 +288,9 @@ class TeleopEnv(gym.Env):
             dtype=np.float32,
         )
 
-        low = np.array([
-            -cfg.L_CYL,      # slave_pos_error
-            -cfg.L_CYL,      # master_pos_error
-            0.0,             # P_s1
-            0.0,             # P_s2
-            0.0,             # P_m1
-            0.0,             # P_m2
-            -0.01,           # mdot_L1
-            -0.01,           # mdot_L2
-        ], dtype=np.float32)
-        high = np.array([
-            cfg.L_CYL,       # slave_pos_error
-            cfg.L_CYL,       # master_pos_error
-            700_000.0,       # P_s1
-            700_000.0,       # P_s2
-            700_000.0,       # P_m1
-            700_000.0,       # P_m2
-            0.01,            # mdot_L1
-            0.01,            # mdot_L2
-        ], dtype=np.float32)
+        # Observation bounds after normalisation (approximate [-1, 1] range).
+        low  = -np.ones(10, dtype=np.float32) * 2.0
+        high =  np.ones(10, dtype=np.float32) * 2.0
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
 
         self._history: dict[str, list] | None = None
@@ -466,9 +449,6 @@ class TeleopEnv(gym.Env):
         # --- Reward ---
         reward = -(track_term + effort_term + transparency_term)
 
-        # Optional clipping
-        reward = float(np.clip(reward, -cfg.REWARD_CLIP, cfg.REWARD_CLIP))
-
 
         # --- History (one entry per RL step) ----------------------
         if self._history is not None:
@@ -537,27 +517,24 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     def _get_obs(self) -> np.ndarray:
         """
-        8-D observation:
-        [slave_pos_error, master_pos_error, P_s1, P_s2, P_m1, P_m2,
-         mdot_L1, mdot_L2]
+        10-D normalised observation:
+        [slave_pos_from_eq, master_pos_from_eq, v_s, v_m,
+         P_s1, P_s2, P_m1, P_m2, mdot_L1, mdot_L2]
+
+        Each feature is divided by its physical scale so the vector
+        lives in approximately [-1, 1].
         """
-        slave_pos_error = self.state[self.IX_XS] - _X_EQ
-        master_pos_error = self.state[self.IX_XM] - _X_EQ
-        p_s1 = self.state[self.IX_PS1]
-        p_s2 = self.state[self.IX_PS2]
-        p_m1 = self.state[self.IX_PM1]
-        p_m2 = self.state[self.IX_PM2]
-        mdot_l1 = self.state[self.IX_ML1]
-        mdot_l2 = self.state[self.IX_ML2]
         return np.array([
-            slave_pos_error,
-            master_pos_error,
-            p_s1,
-            p_s2,
-            p_m1,
-            p_m2,
-            mdot_l1,
-            mdot_l2,
+            (self.state[self.IX_XS] - _X_EQ)  / cfg.OBS_SCALE_POS,
+            (self.state[self.IX_XM] - _X_EQ)  / cfg.OBS_SCALE_POS,
+            self.state[self.IX_VS]             / cfg.OBS_SCALE_VEL,
+            self.state[self.IX_VM]             / cfg.OBS_SCALE_VEL,
+            self.state[self.IX_PS1]            / cfg.OBS_SCALE_PRESSURE,
+            self.state[self.IX_PS2]            / cfg.OBS_SCALE_PRESSURE,
+            self.state[self.IX_PM1]            / cfg.OBS_SCALE_PRESSURE,
+            self.state[self.IX_PM2]            / cfg.OBS_SCALE_PRESSURE,
+            self.state[self.IX_ML1]            / cfg.OBS_SCALE_FLOW,
+            self.state[self.IX_ML2]            / cfg.OBS_SCALE_FLOW,
         ], dtype=np.float32)
 
     def _get_info(self) -> dict:
@@ -604,4 +581,42 @@ class TeleopEnv(gym.Env):
             len(cfg.MASTER_P2_BINS) + 1,
             len(cfg.MASS_FLOW1_BINS) + 1,
             len(cfg.MASS_FLOW2_BINS) + 1,
+        )
+
+    # ---------- Reduced 4-D Q-table helpers ----------
+
+    def discretise_obs_reduced(self, obs: np.ndarray) -> tuple[int, ...]:
+        """
+        Map the 10-D normalised observation to a reduced 4-D discrete state:
+          (tracking_error, velocity_error, slave_pdiff, master_pdiff)
+        Un-normalises the relevant features before digitising.
+        """
+        slave_pos  = obs[0] * cfg.OBS_SCALE_POS
+        master_pos = obs[1] * cfg.OBS_SCALE_POS
+        v_s        = obs[2] * cfg.OBS_SCALE_VEL
+        v_m        = obs[3] * cfg.OBS_SCALE_VEL
+        P_s1       = obs[4] * cfg.OBS_SCALE_PRESSURE
+        P_s2       = obs[5] * cfg.OBS_SCALE_PRESSURE
+        P_m1       = obs[6] * cfg.OBS_SCALE_PRESSURE
+        P_m2       = obs[7] * cfg.OBS_SCALE_PRESSURE
+
+        tracking_error = master_pos - slave_pos
+        velocity_error = v_m - v_s
+        slave_pdiff    = P_s1 - P_s2
+        master_pdiff   = P_m1 - P_m2
+
+        return (
+            int(np.digitize(tracking_error, cfg.REDUCED_TRACKING_ERROR_BINS)),
+            int(np.digitize(velocity_error, cfg.REDUCED_VELOCITY_ERROR_BINS)),
+            int(np.digitize(slave_pdiff,    cfg.REDUCED_SLAVE_PRESSURE_DIFF_BINS)),
+            int(np.digitize(master_pdiff,   cfg.REDUCED_MASTER_PRESSURE_DIFF_BINS)),
+        )
+
+    def get_state_dims_reduced(self) -> tuple[int, ...]:
+        """Number of discrete bins per dimension for the reduced 4-D state."""
+        return (
+            len(cfg.REDUCED_TRACKING_ERROR_BINS) + 1,
+            len(cfg.REDUCED_VELOCITY_ERROR_BINS) + 1,
+            len(cfg.REDUCED_SLAVE_PRESSURE_DIFF_BINS) + 1,
+            len(cfg.REDUCED_MASTER_PRESSURE_DIFF_BINS) + 1,
         )

@@ -12,14 +12,14 @@ print(f"Reset OK  —  obs: {obs}")
 print(f"Info: {info}")
 
 # Single step
-obs2, r, term, trunc, info2 = env.step(4)  # u_v = 0
+obs2, r, term, trunc, info2 = env.step(5)  # u_v = 0 (middle of [-5, 5])
 print(f"\nStep 1 (u_v=0V)  —  obs: {obs2}  reward: {r:.6f}")
 
 # Run 50 RL steps, measure wall time
 t0 = time.perf_counter()
 total_r = 0.0
 for i in range(50):
-    obs, r, term, trunc, _ = env.step(np.random.randint(9))
+    obs, r, term, trunc, _ = env.step(np.random.randint(11))
     total_r += r
 elapsed = time.perf_counter() - t0
 print(f"\n50 RL steps in {elapsed:.3f}s  ({elapsed/50*1000:.1f} ms/step)")
@@ -32,4 +32,12 @@ steps_per_sec = 50 / elapsed
 est_ep = 1500 / steps_per_sec
 print(f"\n  Estimated episode time: {est_ep:.1f}s")
 print(f"  Estimated 10k episodes: {est_ep * 10000 / 3600:.1f} hours")
+
+# Test reduced 4-D discretisation
+obs3, _ = env.reset()
+state_4d = env.discretise_obs_reduced(obs3)
+dims_4d = env.get_state_dims_reduced()
+print(f"\n  Reduced 4-D state: {state_4d}")
+print(f"  Reduced state dims: {dims_4d}")
+
 print("\nSmoke test PASSED")
