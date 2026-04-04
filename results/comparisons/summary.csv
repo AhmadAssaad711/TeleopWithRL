@@ -1,7 +1,0 @@
-case,agent,mean_reward,tracking_rmse_mm,transparency_rmse_w
-constant,DQN,-62.366827,1.312945,2.841972
-constant,Q-learning,-1024.537862,12.007846,5.380280
-constant,MRAC,-2757.797717,22.257378,0.948788
-changing,DQN,-59.654848,1.926722,2.397038
-changing,Q-learning,-1184.354339,13.276428,4.945503
-changing,MRAC,-1688.267226,17.411225,0.809582

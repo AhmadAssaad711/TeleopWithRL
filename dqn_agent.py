@@ -12,7 +12,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-import config as cfg
+try:
+    from . import config as cfg
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
 
 
 # ------------------------------------------------------------------ #
@@ -141,6 +144,18 @@ class DQNAgent:
             t = torch.as_tensor(obs, dtype=torch.float32,
                                 device=self.device).unsqueeze(0)
             return int(self.policy_net(t).argmax(dim=1).item())
+
+    def q_values(self, obs: np.ndarray) -> np.ndarray:
+        """Return Q(s, :) for one observation without applying epsilon-greedy."""
+        with torch.no_grad():
+            t = torch.as_tensor(obs, dtype=torch.float32,
+                                device=self.device).unsqueeze(0)
+            q = self.policy_net(t).squeeze(0).cpu().numpy()
+        return np.asarray(q, dtype=np.float64)
+
+    def greedy_action(self, obs: np.ndarray) -> int:
+        """Return argmax_a Q(s, a) without exploration."""
+        return int(np.argmax(self.q_values(obs)))
 
     # ------------------------------------------------------------------ #
     #  Store + learn                                                       #

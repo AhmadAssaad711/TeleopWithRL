@@ -23,12 +23,18 @@ results/mrac/
 results/comparisons/
 results/paper_replica/
 results/old/
+results_fh/
 
 # PyTorch models
 *.pt
 
 # Temp files
 tmpclaude-*
+*.slxc
+*.asv
+
+# MATLAB generated files
+slprj/
 
 # Jupyter
 .ipynb_checkpoints/

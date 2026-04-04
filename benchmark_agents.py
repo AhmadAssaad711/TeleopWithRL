@@ -10,11 +10,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-import config as cfg
-from dqn_agent import DQNAgent
-from mrac_controller import FilteredMRACController
-from q_learning_agent import QLearningAgent
-from teleop_env import TeleopEnv
+try:
+    from . import config as cfg
+    from .dqn_agent import DQNAgent
+    from .mrac_controller import FilteredMRACController, baseline_mrac_inputs
+    from .q_learning_agent import QLearningAgent
+    from .teleop_env import TeleopEnv
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
+    from dqn_agent import DQNAgent
+    from mrac_controller import FilteredMRACController, baseline_mrac_inputs
+    from q_learning_agent import QLearningAgent
+    from teleop_env import TeleopEnv
 
 
 @dataclass
@@ -65,13 +72,14 @@ def _eval_episode_stats(env: TeleopEnv) -> tuple[float, float, float, dict]:
 
 
 def _evaluate_dqn(agent: DQNAgent, env_mode: str,
+                  master_input_mode: str,
                   n_episodes: int = 1) -> EvalResult:
     rewards, trk, trn = [], [], []
     rep_hist: dict = {}
     old_eps = agent.epsilon
     agent.epsilon = 0.0
     for ep in range(n_episodes):
-        env = TeleopEnv(env_mode=env_mode)
+        env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
         obs, _ = env.reset(seed=ep)
         done = False
         while not done:
@@ -88,12 +96,13 @@ def _evaluate_dqn(agent: DQNAgent, env_mode: str,
 
 
 def _evaluate_ql(agent: QLearningAgent, env_mode: str,
+                 master_input_mode: str,
                  n_episodes: int = 1) -> EvalResult:
     rewards, trk, trn = [], [], []
     rep_hist: dict = {}
     zero_action = int(np.argmin(np.abs(cfg.V_LEVELS)))
     for ep in range(n_episodes):
-        env = TeleopEnv(env_mode=env_mode)
+        env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
         obs, _ = env.reset(seed=ep)
         state = env.discretise_obs_reduced(obs)
         done = False
@@ -110,22 +119,20 @@ def _evaluate_ql(agent: QLearningAgent, env_mode: str,
                       float(np.mean(trn)), rep_hist)
 
 
-def _evaluate_mrac(env_mode: str, n_episodes: int = 1) -> EvalResult:
+def _evaluate_mrac(env_mode: str, master_input_mode: str,
+                   n_episodes: int = 1) -> EvalResult:
     rewards, trk, trn = [], [], []
     rep_hist: dict = {}
     for ep in range(n_episodes):
-        env = TeleopEnv(env_mode=env_mode)
+        env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
         ctrl = FilteredMRACController()
         ctrl.reset()
         obs, info = env.reset(seed=ep)
         done = False
         while not done:
-            action, _ = ctrl.step_action(
-                pos_error=float(info["x_m"] - info["x_s"]),
-                u_c=float(info["x_m"]),
-                action_table=cfg.V_LEVELS,
-            )
-            obs, _, terminated, truncated, info = env.step(action)
+            y, u_c = baseline_mrac_inputs(info)
+            u_v = ctrl.step_voltage(pos_error=y, u_c=u_c)
+            obs, _, terminated, truncated, info = env.step_voltage(u_v)
             done = terminated or truncated
         r, t, tr, h = _eval_episode_stats(env)
         rewards.append(r); trk.append(t); trn.append(tr)
@@ -140,9 +147,10 @@ def _evaluate_mrac(env_mode: str, n_episodes: int = 1) -> EvalResult:
 # ------------------------------------------------------------------ #
 
 def _train_dqn(env_mode: str, out_name: str,
+               master_input_mode: str,
                num_episodes: int = cfg.DQN_NUM_EPISODES) -> tuple[DQNAgent, EvalResult]:
     dirs = _mk_agent_dirs(out_name)
-    env = TeleopEnv(env_mode=env_mode)
+    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     agent = DQNAgent(obs_dim=10, n_actions=cfg.N_ACTIONS, seed=42)
 
     ep_rewards = np.zeros(num_episodes, dtype=np.float64)
@@ -173,25 +181,27 @@ def _train_dqn(env_mode: str, out_name: str,
 
     # -- Post-training test: 100 greedy episodes --
     print(f"  [{out_name}] Running 100-episode greedy test …")
-    test_ev = _evaluate_dqn(agent, env_mode, n_episodes=100)
+    test_ev = _evaluate_dqn(agent, env_mode, master_input_mode, n_episodes=100)
     print(f"  [{out_name}] TEST  avgR={test_ev.mean_reward:+.2f} | "
           f"track={test_ev.tracking_rmse_m*1000:.3f} mm | "
           f"transp={test_ev.transparency_rmse:.5f} W")
     with open(os.path.join(dirs["logs"], "test_100ep.txt"), "w") as f:
+        f.write(f"master_input_mode={master_input_mode}\n")
         f.write(f"mean_reward={test_ev.mean_reward:.6f}\n")
         f.write(f"tracking_rmse_mm={test_ev.tracking_rmse_m*1000:.6f}\n")
         f.write(f"transparency_rmse_w={test_ev.transparency_rmse:.6f}\n")
 
-    ev = _evaluate_dqn(agent, env_mode, n_episodes=cfg.DQN_EVAL_EPISODES)
+    ev = _evaluate_dqn(agent, env_mode, master_input_mode, n_episodes=cfg.DQN_EVAL_EPISODES)
     np.savez(os.path.join(dirs["episodes"], "eval_episode.npz"),
              **{k: np.array(v, dtype=object) for k, v in ev.history.items()})
     return agent, ev
 
 
 def _train_ql(env_mode: str, out_name: str,
+              master_input_mode: str,
               num_episodes: int = cfg.NUM_EPISODES) -> tuple[QLearningAgent, EvalResult]:
     dirs = _mk_agent_dirs(out_name)
-    env = TeleopEnv(env_mode=env_mode)
+    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     state_dims = env.get_state_dims_reduced()
     agent = QLearningAgent(state_dims, cfg.N_ACTIONS, seed=42)
 
@@ -224,16 +234,17 @@ def _train_ql(env_mode: str, out_name: str,
 
     # -- Post-training test: 100 greedy episodes --
     print(f"  [{out_name}] Running 100-episode greedy test …")
-    test_ev = _evaluate_ql(agent, env_mode, n_episodes=100)
+    test_ev = _evaluate_ql(agent, env_mode, master_input_mode, n_episodes=100)
     print(f"  [{out_name}] TEST  avgR={test_ev.mean_reward:+.2f} | "
           f"track={test_ev.tracking_rmse_m*1000:.3f} mm | "
           f"transp={test_ev.transparency_rmse:.5f} W")
     with open(os.path.join(dirs["logs"], "test_100ep.txt"), "w") as f:
+        f.write(f"master_input_mode={master_input_mode}\n")
         f.write(f"mean_reward={test_ev.mean_reward:.6f}\n")
         f.write(f"tracking_rmse_mm={test_ev.tracking_rmse_m*1000:.6f}\n")
         f.write(f"transparency_rmse_w={test_ev.transparency_rmse:.6f}\n")
 
-    ev = _evaluate_ql(agent, env_mode, n_episodes=cfg.EVAL_EPISODES)
+    ev = _evaluate_ql(agent, env_mode, master_input_mode, n_episodes=cfg.EVAL_EPISODES)
     np.savez(os.path.join(dirs["episodes"], "eval_episode.npz"),
              **{k: np.array(v, dtype=object) for k, v in ev.history.items()})
     return agent, ev
@@ -303,24 +314,28 @@ def _save_comparison(results: dict[str, EvalResult], title: str,
 # ------------------------------------------------------------------ #
 
 def run_full_benchmark() -> None:
+    master_input_mode = cfg.DEFAULT_MASTER_INPUT_MODE
+    print(f"Running benchmark with master_input_mode={master_input_mode} | results_root={cfg.RESULTS_ROOT_DIR}")
+
     # ---- 1. Train DQN ----
-    _, dqn_const = _train_dqn(cfg.ENV_MODE_CONSTANT, cfg.DQN_CONSTANT_DIR)
-    _, dqn_chg   = _train_dqn(cfg.ENV_MODE_CHANGING,  cfg.DQN_CHANGING_DIR)
+    _, dqn_const = _train_dqn(cfg.ENV_MODE_CONSTANT, cfg.DQN_CONSTANT_DIR, master_input_mode)
+    _, dqn_chg   = _train_dqn(cfg.ENV_MODE_CHANGING,  cfg.DQN_CHANGING_DIR, master_input_mode)
 
     # ---- 2. Train Q-learning ----
-    _, ql_const = _train_ql(cfg.ENV_MODE_CONSTANT, cfg.Q_LEARNING_CONSTANT_DIR)
-    _, ql_chg   = _train_ql(cfg.ENV_MODE_CHANGING,  cfg.Q_LEARNING_CHANGING_DIR)
+    _, ql_const = _train_ql(cfg.ENV_MODE_CONSTANT, cfg.Q_LEARNING_CONSTANT_DIR, master_input_mode)
+    _, ql_chg   = _train_ql(cfg.ENV_MODE_CHANGING,  cfg.Q_LEARNING_CHANGING_DIR, master_input_mode)
 
     # ---- 3. MRAC baselines ----
     mrac_dirs = _mk_agent_dirs(cfg.MRAC_RESULTS_DIR)
-    mrac_const = _evaluate_mrac(cfg.ENV_MODE_CONSTANT, n_episodes=cfg.EVAL_EPISODES)
-    mrac_chg   = _evaluate_mrac(cfg.ENV_MODE_CHANGING,  n_episodes=cfg.EVAL_EPISODES)
+    mrac_const = _evaluate_mrac(cfg.ENV_MODE_CONSTANT, master_input_mode, n_episodes=cfg.EVAL_EPISODES)
+    mrac_chg   = _evaluate_mrac(cfg.ENV_MODE_CHANGING,  master_input_mode, n_episodes=cfg.EVAL_EPISODES)
 
     np.savez(os.path.join(mrac_dirs["episodes"], "constant_eval.npz"),
              **{k: np.array(v, dtype=object) for k, v in mrac_const.history.items()})
     np.savez(os.path.join(mrac_dirs["episodes"], "changing_eval.npz"),
              **{k: np.array(v, dtype=object) for k, v in mrac_chg.history.items()})
     with open(os.path.join(mrac_dirs["logs"], "mrac_metrics.txt"), "w") as f:
+        f.write(f"master_input_mode={master_input_mode}\n")
         for label, ev in [("constant", mrac_const), ("changing", mrac_chg)]:
             f.write(f"MRAC {label}: R={ev.mean_reward:.3f}, "
                     f"TE={ev.tracking_rmse_m*1000:.3f} mm, "
@@ -330,22 +345,22 @@ def run_full_benchmark() -> None:
     cmp = _mk_compare_dir()
     _save_comparison(
         {"DQN": dqn_const, "Q-learning": ql_const, "MRAC": mrac_const},
-        "Constant Environment: DQN vs Q-learning vs MRAC",
+        "Constant Environment (F_h input): DQN vs Q-learning vs MRAC",
         os.path.join(cmp, "comparison_constant.png"),
     )
     _save_comparison(
         {"DQN": dqn_chg, "Q-learning": ql_chg, "MRAC": mrac_chg},
-        "Changing Environment: DQN vs Q-learning vs MRAC",
+        "Changing Environment (F_h input): DQN vs Q-learning vs MRAC",
         os.path.join(cmp, "comparison_changing.png"),
     )
 
     # ---- 5. Summary CSV ----
     with open(os.path.join(cmp, "summary.csv"), "w") as f:
-        f.write("case,agent,mean_reward,tracking_rmse_mm,transparency_rmse_w\n")
+        f.write("master_input_mode,case,agent,mean_reward,tracking_rmse_mm,transparency_rmse_w\n")
         for label, evs in [("constant", {"DQN": dqn_const, "Q-learning": ql_const, "MRAC": mrac_const}),
                            ("changing", {"DQN": dqn_chg,   "Q-learning": ql_chg,   "MRAC": mrac_chg})]:
             for name, ev in evs.items():
-                f.write(f"{label},{name},{ev.mean_reward:.6f},"
+                f.write(f"{master_input_mode},{label},{name},{ev.mean_reward:.6f},"
                         f"{ev.tracking_rmse_m*1000:.6f},{ev.transparency_rmse:.6f}\n")
 
     print("\nBenchmark complete.")

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import numpy as np
 
-import config as cfg
+try:
+    from . import config as cfg
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
 
 
 class QLearningAgent:

@@ -23,7 +23,10 @@ from typing import Any
 
 import numpy as np
 
-import config as cfg
+try:
+    from . import config as cfg
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
 
 
 @dataclass
@@ -241,6 +244,16 @@ class FilteredMRACController:
         action = self.voltage_to_action(u_v, action_table)
         return action, u_v
 
+
+def baseline_mrac_inputs(info: dict[str, float]) -> tuple[float, float]:
+    """
+    Return the (y, u_c) signals used by the TeleopEnv MRAC baseline.
+
+    The stable sign convention for the current plant is y = x_s - x_m.
+    The baseline reference model is the zero-error target, so u_c = 0.
+    """
+    return float(info["x_s"] - info["x_m"]), 0.0
+
 def _mk_outdirs() -> dict[str, str]:
     base = os.path.join(
         os.path.dirname(__file__),
@@ -351,6 +364,7 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
     paths = _mk_outdirs()
     env = TeleopEnv(
         env_mode=cfg.ENV_MODE_CHANGING,
+        master_input_mode=cfg.PAPER_MASTER_INPUT_MODE,
         episode_duration=cfg.PAPER_EPISODE_DURATION,
         env_switch_time=cfg.PAPER_ENV_SWITCH_TIME,
         terminate_on_error=False,
@@ -359,9 +373,14 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
     ctrl.reset()
 
     _, info = env.reset(seed=seed)
-    env.fh_amp = float(cfg.PAPER_FORCE_AMP)
-    env.fh_freq = float(cfg.PAPER_FORCE_FREQ)
-    env.fh_phase = float(cfg.PAPER_FORCE_PHASE)
+    if env.master_input_mode == cfg.MASTER_INPUT_FORCE:
+        env.force_amp = float(cfg.PAPER_FORCE_AMP)
+        env.force_freq = float(cfg.PAPER_FORCE_FREQ)
+        env.force_phase = float(cfg.PAPER_FORCE_PHASE)
+    else:
+        env.fh_amp = float(cfg.REF_POS_AMP)
+        env.fh_freq = float(cfg.REF_POS_FREQ)
+        env.fh_phase = float(cfg.REF_POS_PHASE)
 
     ctrl_history: dict[str, list] = {
         "time": [],
@@ -378,10 +397,8 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
 
     done = False
     while not done:
-        u_v = ctrl.step_voltage(
-            pos_error=float(info["x_m"] - info["x_s"]),
-            u_c=float(info["x_m"]),
-        )
+        y, u_c = baseline_mrac_inputs(info)
+        u_v = ctrl.step_voltage(pos_error=y, u_c=u_c)
         d = ctrl.diagnostics()
         _, _, terminated, truncated, info = env.step_voltage(u_v)
         done = terminated or truncated

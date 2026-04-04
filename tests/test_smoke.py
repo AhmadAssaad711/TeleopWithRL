@@ -1,43 +1,41 @@
-"""Quick smoke test for pneumatic simulation."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+"""Basic regression tests for environment reset, stepping, and state bins."""
 
-import time
+from __future__ import annotations
+
 import numpy as np
-from teleop_env import TeleopEnv
 
-env = TeleopEnv()
-obs, info = env.reset()
-print(f"Reset OK  —  obs: {obs}")
-print(f"Info: {info}")
+from TeleopWithRL import config as cfg
+from TeleopWithRL.teleop_env import TeleopEnv
 
-# Single step
-obs2, r, term, trunc, info2 = env.step(5)  # u_v = 0 (middle of [-5, 5])
-print(f"\nStep 1 (u_v=0V)  —  obs: {obs2}  reward: {r:.6f}")
 
-# Run 50 RL steps, measure wall time
-t0 = time.perf_counter()
-total_r = 0.0
-for i in range(50):
-    obs, r, term, trunc, _ = env.step(np.random.randint(11))
-    total_r += r
-elapsed = time.perf_counter() - t0
-print(f"\n50 RL steps in {elapsed:.3f}s  ({elapsed/50*1000:.1f} ms/step)")
-print(f"  Total reward: {total_r:.4f}")
-print(f"  Final state:  x_m={env.state[0]*1000:.2f}mm  x_s={env.state[2]*1000:.2f}mm")
-print(f"  Pressures:    P_m1={env.state[4]/1000:.1f}kPa  P_s1={env.state[6]/1000:.1f}kPa")
+def test_env_reset_and_zero_voltage_step() -> None:
+    env = TeleopEnv(master_input_mode=cfg.DEFAULT_MASTER_INPUT_MODE)
+    obs, info = env.reset(seed=0)
 
-# Full episode speed estimate
-steps_per_sec = 50 / elapsed
-est_ep = 1500 / steps_per_sec
-print(f"\n  Estimated episode time: {est_ep:.1f}s")
-print(f"  Estimated 10k episodes: {est_ep * 10000 / 3600:.1f} hours")
+    assert obs.shape == (10,)
+    assert np.isfinite(obs).all()
+    assert info["time"] == 0.0
+    assert info["master_input_mode"] == cfg.DEFAULT_MASTER_INPUT_MODE
 
-# Test reduced 4-D discretisation
-obs3, _ = env.reset()
-state_4d = env.discretise_obs_reduced(obs3)
-dims_4d = env.get_state_dims_reduced()
-print(f"\n  Reduced 4-D state: {state_4d}")
-print(f"  Reduced state dims: {dims_4d}")
+    next_obs, reward, terminated, truncated, next_info = env.step_voltage(0.0)
 
-print("\nSmoke test PASSED")
+    assert next_obs.shape == (10,)
+    assert np.isfinite(next_obs).all()
+    assert np.isfinite(reward)
+    assert terminated is False
+    assert truncated is False
+    assert next_info["u_v"] == 0.0
+    assert next_info["time"] > 0.0
+
+
+def test_reduced_state_discretisation_shape() -> None:
+    env = TeleopEnv(master_input_mode=cfg.DEFAULT_MASTER_INPUT_MODE)
+    obs, _ = env.reset(seed=1)
+
+    state = env.discretise_obs_reduced(obs)
+    dims = env.get_state_dims_reduced()
+
+    assert len(state) == 4
+    assert len(dims) == 4
+    assert all(isinstance(index, int) for index in state)
+    assert all(size > 1 for size in dims)

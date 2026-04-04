@@ -1,2 +1,0 @@
-MRAC constant: R=-2757.798, TE=22.257 mm, TrE=0.94879 W
-MRAC changing: R=-1688.267, TE=17.411 mm, TrE=0.80958 W

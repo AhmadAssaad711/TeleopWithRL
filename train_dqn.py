@@ -10,9 +10,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-import config as cfg
-from dqn_agent import DQNAgent
-from teleop_env import TeleopEnv
+try:
+    from . import config as cfg
+    from .dqn_agent import DQNAgent
+    from .teleop_env import TeleopEnv
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
+    from dqn_agent import DQNAgent
+    from teleop_env import TeleopEnv
 
 MOVING_AVG_WINDOW = 200
 PRINT_EVERY       = 50
@@ -45,13 +50,17 @@ def _moving_avg(x: np.ndarray, w: int) -> np.ndarray:
 def train_dqn(
     total_episodes: int = cfg.DQN_NUM_EPISODES,
     env_mode: str = cfg.ENV_MODE_CHANGING,
+    master_input_mode: str = cfg.DEFAULT_MASTER_INPUT_MODE,
 ) -> None:
     out_name = _out_dir(env_mode)
     paths = _mk_dirs(out_name)
-    print(f"DQN training | episodes={total_episodes} | env_mode={env_mode}")
+    print(
+        f"DQN training | episodes={total_episodes} | env_mode={env_mode} | "
+        f"master_input_mode={master_input_mode}"
+    )
     print(f"Output → {paths['base']}")
 
-    env = TeleopEnv(env_mode=env_mode)
+    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     agent = DQNAgent(obs_dim=10, n_actions=cfg.N_ACTIONS, seed=42)
 
     ep_returns     = np.zeros(total_episodes, dtype=np.float64)
@@ -104,7 +113,7 @@ def train_dqn(
              episode_transparency_rmse=ep_transp_rmse)
 
     # ---- Greedy evaluation episode --------------------------------
-    eval_hist = _evaluate_greedy(agent, env_mode)
+    eval_hist = _evaluate_greedy(agent, env_mode, master_input_mode)
     np.savez(os.path.join(paths["episodes"], "greedy_eval_episode.npz"),
              **{k: np.array(v, dtype=object) for k, v in eval_hist.items()})
 
@@ -116,6 +125,8 @@ def train_dqn(
     te_ev = np.asarray(eval_hist.get("transparency_error", []), dtype=np.float64)
     with open(os.path.join(paths["logs"], "summary.txt"), "w") as f:
         f.write(f"env_mode={env_mode}\n")
+        f.write(f"master_input_mode={master_input_mode}\n")
+        f.write(f"results_root={cfg.RESULTS_ROOT_DIR}\n")
         f.write(f"total_episodes={total_episodes}\n")
         f.write(f"total_env_steps={total_steps}\n")
         f.write(f"grad_steps={agent.train_step_count}\n")
@@ -128,8 +139,8 @@ def train_dqn(
 
 # ------------------------------------------------------------------ #
 
-def _evaluate_greedy(agent: DQNAgent, env_mode: str) -> dict:
-    env = TeleopEnv(env_mode=env_mode)
+def _evaluate_greedy(agent: DQNAgent, env_mode: str, master_input_mode: str) -> dict:
+    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     obs, _ = env.reset(seed=123)
     old_eps = agent.epsilon
     agent.epsilon = 0.0
@@ -174,6 +185,13 @@ if __name__ == "__main__":
     parser.add_argument("--env-mode",
                         choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING],
                         default=cfg.ENV_MODE_CHANGING)
+    parser.add_argument("--master-input-mode",
+                        choices=[cfg.MASTER_INPUT_REFERENCE, cfg.MASTER_INPUT_FORCE],
+                        default=cfg.DEFAULT_MASTER_INPUT_MODE)
     parser.add_argument("--episodes", type=int, default=cfg.DQN_NUM_EPISODES)
     args = parser.parse_args()
-    train_dqn(total_episodes=args.episodes, env_mode=args.env_mode)
+    train_dqn(
+        total_episodes=args.episodes,
+        env_mode=args.env_mode,
+        master_input_mode=args.master_input_mode,
+    )

@@ -36,10 +36,9 @@ Dynamics equations (numbers refer to paper):
   (10) Tube inertance   dṁ_L/dt = (A_t/L)·(P_up − P_down − ΔP_friction)
   (11) Tube friction    ΔP_friction = 32·μ·ṁ_L·L / (ρ·A_t·D_t²)
 
-Input semantics in this implementation:
-  - The master motion is prescribed by a bounded reference trajectory x_m(t)=r(t).
-  - F_h is computed from Eq. (2) using trajectory derivatives and master pressures:
-      F_h = (P_m1 - P_m2)·A_p - m_p·r¨(t) - β·r˙(t)
+Master input semantics supported by this implementation:
+  - Reference mode: x_m(t)=r(t) is prescribed and F_h is reconstructed from Eq. (2).
+  - Force mode: F_h(t) is prescribed and x_m(t) evolves from the master dynamics.
 """
 
 from __future__ import annotations
@@ -50,7 +49,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-import config as cfg
+try:
+    from . import config as cfg
+except ImportError:  # pragma: no cover - direct script execution
+    import config as cfg
 
 # Pre-computed constants  (plain Python floats — no numpy overhead)
 _RT: float            = cfg.R_GAS * cfg.T_AIR
@@ -126,11 +128,126 @@ def _master_reference(t: float, ref_amp: float, ref_freq: float, ref_phase: floa
     return x_ref, v_ref, a_ref
 
 
+def _force_waveform_value(phase: float, waveform: str) -> float:
+    waveform = str(waveform).strip().lower()
+    if waveform == "sine":
+        return math.sin(phase)
+    if waveform == "cosine":
+        return math.cos(phase)
+    if waveform == "square":
+        return 1.0 if math.sin(phase) >= 0.0 else -1.0
+    if waveform == "multisine":
+        return 0.75 * math.sin(phase) + 0.25 * math.sin((2.0 * phase) + 0.35)
+    raise ValueError(f"Unknown force waveform: {waveform}")
+
+
+def _build_force_noise_components(noise_seed: int | None, n_components: int = 4) -> tuple[tuple[float, float, float], ...]:
+    if n_components <= 0:
+        return ()
+
+    seed = 0 if noise_seed is None else int(noise_seed)
+    rng = np.random.default_rng(seed)
+    weights = rng.uniform(0.35, 1.0, size=n_components)
+    norm = math.sqrt(max(0.5 * float(np.sum(weights ** 2)), 1e-12))
+    coeffs = weights / norm
+    freq_multipliers = rng.uniform(1.4, 4.5, size=n_components)
+    phases = rng.uniform(0.0, _TWO_PI, size=n_components)
+    return tuple(
+        (float(coeff), float(freq_mul), float(phase))
+        for coeff, freq_mul, phase in zip(coeffs, freq_multipliers, phases)
+    )
+
+
+def _force_noise_signal(
+    t: float,
+    base_freq: float,
+    noise_std: float,
+    noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = (),
+) -> float:
+    if noise_std <= 0.0 or not noise_components:
+        return 0.0
+
+    freq = abs(float(base_freq))
+    if freq <= 1e-9:
+        freq = float(cfg.FORCE_INPUT_FREQ)
+
+    total = 0.0
+    for coeff, freq_mul, phase in noise_components:
+        total += coeff * math.sin((_TWO_PI * freq * freq_mul * t) + phase)
+    return float(noise_std) * total
+
+
+def _master_force_components(
+    t: float,
+    force_amp: float,
+    force_bias: float,
+    force_freq: float,
+    force_phase: float,
+    force_waveform: str = "sine",
+    force_noise_std: float = 0.0,
+    force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = (),
+) -> tuple[float, float, float]:
+    amp = abs(float(force_amp))
+    bias = float(force_bias)
+    omega = _TWO_PI * force_freq
+    phase = (omega * t) + force_phase
+    nominal = bias + (amp * _force_waveform_value(phase, force_waveform))
+    noise = _force_noise_signal(t, force_freq, force_noise_std, force_noise_components)
+    return nominal, noise, nominal + noise
+
+
+def _master_force_signal(
+    t: float,
+    force_amp: float,
+    force_bias: float,
+    force_freq: float,
+    force_phase: float,
+    force_waveform: str = "sine",
+    force_noise_std: float = 0.0,
+    force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = (),
+) -> float:
+    _, _, total = _master_force_components(
+        t,
+        force_amp,
+        force_bias,
+        force_freq,
+        force_phase,
+        force_waveform,
+        force_noise_std,
+        force_noise_components,
+    )
+    return total
+
+
 def _derivatives(s: list[float], t: float, u_v: float,
+                 master_input_mode: str,
                  ref_amp: float, ref_freq: float, ref_phase: float,
+                 force_amp: float, force_bias: float, force_freq: float, force_phase: float, force_waveform: str,
+                 force_noise_std: float, force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()],
                  Be: float, Ke: float) -> list[float]:
     """12-D derivative vector — pure Python scalars, no numpy."""
-    x_m, v_m, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+    if master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+        x_m, v_m, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+        dx_m = 0.0
+        a_m = 0.0
+    elif master_input_mode == cfg.MASTER_INPUT_FORCE:
+        x_m = _clamp(s[0], _XMIN, _XMAX)
+        v_m = s[1]
+        F_h = _master_force_signal(
+            t,
+            force_amp,
+            force_bias,
+            force_freq,
+            force_phase,
+            force_waveform,
+            force_noise_std,
+            force_noise_components,
+        )
+        dx_m = v_m
+        a_m = ((s[4] - s[5]) * _AP - _BETA * v_m - F_h) / _MP
+    else:
+        raise ValueError(f"Unknown master_input_mode: {master_input_mode}")
+
     x_s  = _clamp(s[2], _XMIN, _XMAX)
     v_s  = s[3]
     P_m1 = s[4] if s[4] > _PMIN else _PMIN
@@ -181,23 +298,32 @@ def _derivatives(s: list[float], t: float, u_v: float,
     d_mdot_L1 = _TUBE_INERTANCE * (P_m1 - P_s2 - _FRICTION_COEFF * mdot_L1)
     d_mdot_L2 = _TUBE_INERTANCE * (P_m2 - P_s1 - _FRICTION_COEFF * mdot_L2)
 
-    return [0.0, 0.0, v_s, a_s,
+    return [dx_m, a_m, v_s, a_s,
             dP_m1, dP_m2, dP_s1, dP_s2,
             d_mdot_L1, d_mdot_L2, dxv, dvv]
 
 
 def _rk4_substeps(state: np.ndarray, t0: float, u_v: float,
+                   master_input_mode: str,
                    ref_amp: float, ref_freq: float, ref_phase: float,
+                   force_amp: float, force_bias: float, force_freq: float, force_phase: float, force_waveform: str,
+                   force_noise_std: float, force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()],
                    Be: float, Ke: float) -> tuple[np.ndarray, float]:
     """Run SUB_STEPS RK4 integration steps.  Returns (new_state, new_t)."""
     # Convert to plain-Python list for speed
     s = state.tolist()
     dt = _DT
-    args = (u_v, ref_amp, ref_freq, ref_phase, Be, Ke)
+    args = (
+        u_v, master_input_mode,
+        ref_amp, ref_freq, ref_phase,
+        force_amp, force_bias, force_freq, force_phase, force_waveform, force_noise_std, force_noise_components,
+        Be, Ke,
+    )
     t = t0
-    x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
-    s[0] = x_ref
-    s[1] = v_ref
+    if master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+        x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+        s[0] = x_ref
+        s[1] = v_ref
 
     for _ in range(_SUB_STEPS):
         k1 = _derivatives(s, t, *args)
@@ -233,9 +359,15 @@ def _rk4_substeps(state: np.ndarray, t0: float, u_v: float,
             s[3] = 0.0
 
         t += dt
-        x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
-        s[0] = x_ref
-        s[1] = v_ref
+        if master_input_mode == cfg.MASTER_INPUT_FORCE:
+            if s[0] <= _XMIN and s[1] < 0.0:
+                s[1] = 0.0
+            if s[0] >= _XMAX and s[1] > 0.0:
+                s[1] = 0.0
+        else:
+            x_ref, v_ref, _ = _master_reference(t, ref_amp, ref_freq, ref_phase)
+            s[0] = x_ref
+            s[1] = v_ref
 
     return np.array(s, dtype=np.float64), t
 
@@ -263,6 +395,7 @@ class TeleopEnv(gym.Env):
         self,
         render_mode: str | None = None,
         env_mode: str | None = None,
+        master_input_mode: str | None = None,
         episode_duration: float | None = None,
         env_switch_time: float | None = None,
         terminate_on_error: bool = True,
@@ -270,6 +403,7 @@ class TeleopEnv(gym.Env):
         super().__init__()
         self.render_mode = render_mode
         self.env_mode = env_mode or cfg.ENV_MODE_CONSTANT
+        self.master_input_mode = master_input_mode or cfg.DEFAULT_MASTER_INPUT_MODE
         self.episode_duration = float(
             cfg.EPISODE_DURATION if episode_duration is None else episode_duration
         )
@@ -297,6 +431,40 @@ class TeleopEnv(gym.Env):
         self.last_u_v: float = 0.0
         self.current_env_label: str = "skin"
         self.current_env_id: int = 0
+        self.F_h_nominal: float = 0.0
+        self.F_h_noise: float = 0.0
+
+    def _sync_master_input_parameters(self) -> None:
+        if self.master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+            self.ref_amp = _bounded_ref_amp(float(getattr(self, "fh_amp", self.ref_amp)))
+            self.ref_freq = float(getattr(self, "fh_freq", self.ref_freq))
+            self.ref_phase = float(getattr(self, "fh_phase", self.ref_phase))
+            self.fh_amp = self.ref_amp
+            self.fh_freq = self.ref_freq
+            self.fh_phase = self.ref_phase
+            return
+
+        if self.master_input_mode == cfg.MASTER_INPUT_FORCE:
+            self.force_amp = abs(float(getattr(self, "force_amp", getattr(self, "fh_amp", self.force_amp))))
+            self.force_bias = float(getattr(self, "force_bias", getattr(self, "fh_bias", self.force_bias)))
+            self.force_freq = float(getattr(self, "force_freq", getattr(self, "fh_freq", self.force_freq)))
+            self.force_phase = float(getattr(self, "force_phase", getattr(self, "fh_phase", self.force_phase)))
+            self.force_waveform = str(getattr(self, "force_waveform", getattr(self, "fh_waveform", "sine"))).strip().lower()
+            self.force_noise_std = abs(float(getattr(self, "force_noise_std", getattr(self, "fh_noise_std", 0.0))))
+            self.force_noise_seed = int(getattr(self, "force_noise_seed", getattr(self, "fh_noise_seed", 0)))
+            self.force_noise_components = (
+                _build_force_noise_components(self.force_noise_seed) if self.force_noise_std > 0.0 else ()
+            )
+            self.fh_amp = self.force_amp
+            self.fh_bias = self.force_bias
+            self.fh_freq = self.force_freq
+            self.fh_phase = self.force_phase
+            self.fh_waveform = self.force_waveform
+            self.fh_noise_std = self.force_noise_std
+            self.fh_noise_seed = self.force_noise_seed
+            return
+
+        raise ValueError(f"Unknown master_input_mode: {self.master_input_mode}")
 
     def _set_environment(self, env_label: str) -> None:
         if env_label == "skin":
@@ -328,6 +496,7 @@ class TeleopEnv(gym.Env):
     # -------------------------------------------------------------- #
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
+        options = dict(options or {})
 
         # --- Internal state: 12 variables ---------------------------
         self.state = np.zeros(self.N_STATE, dtype=np.float64)
@@ -342,25 +511,69 @@ class TeleopEnv(gym.Env):
         self.t = 0.0
         self.step_count = 0
 
-        # --- Prescribed master-reference trajectory x_m(t)=r(t) ----------
+        # --- Master input parameters -------------------------------------
         self.ref_amp   = float(cfg.REF_POS_AMP)
         self.ref_freq  = float(cfg.REF_POS_FREQ)
         self.ref_phase = float(cfg.REF_POS_PHASE)
-        # Legacy aliases kept so existing scripts can still set fh_*.
-        self.fh_amp = self.ref_amp
-        self.fh_freq = self.ref_freq
-        self.fh_phase = self.ref_phase
+        self.force_amp = float(cfg.FORCE_INPUT_AMP)
+        self.force_bias = 0.0
+        self.force_freq = float(cfg.FORCE_INPUT_FREQ)
+        self.force_phase = float(cfg.FORCE_INPUT_PHASE)
+        self.force_waveform = "sine"
+        self.force_noise_std = 0.0
+        self.force_noise_seed = 0
+        self.force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = ()
+        for key in (
+            "fh_amp",
+            "fh_bias",
+            "fh_freq",
+            "fh_phase",
+            "fh_waveform",
+            "fh_noise_std",
+            "fh_noise_seed",
+            "force_amp",
+            "force_bias",
+            "force_freq",
+            "force_phase",
+            "force_waveform",
+            "force_noise_std",
+            "force_noise_seed",
+            "ref_amp",
+            "ref_freq",
+            "ref_phase",
+        ):
+            if key in options:
+                setattr(self, key, options[key])
+        self._sync_master_input_parameters()
 
         # --- Environment mode ----------------------------------------
         self._update_environment_mode()
 
-        # --- Initialize master reference state -----------------------
-        x_ref0, v_ref0, _ = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
-        self.state[self.IX_XM] = x_ref0
-        self.state[self.IX_VM] = v_ref0
+        # --- Initialize master state --------------------------------
+        if self.master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+            x_ref0, v_ref0, _ = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
+            self.state[self.IX_XM] = x_ref0
+            self.state[self.IX_VM] = v_ref0
+        else:
+            self.state[self.IX_XM] = _X_EQ
+            self.state[self.IX_VM] = 0.0
 
         # --- Forces (persisted for observation / logging) -----------
-        self.F_h = 0.0
+        if self.master_input_mode == cfg.MASTER_INPUT_FORCE:
+            self.F_h_nominal, self.F_h_noise, self.F_h = _master_force_components(
+                self.t,
+                self.force_amp,
+                self.force_bias,
+                self.force_freq,
+                self.force_phase,
+                self.force_waveform,
+                self.force_noise_std,
+                self.force_noise_components,
+            )
+        else:
+            self.F_h_nominal = 0.0
+            self.F_h_noise = 0.0
+            self.F_h = 0.0
         self.a_m_signal = 0.0
         self.F_e = 0.0
         self.last_u_v = 0.0
@@ -370,7 +583,7 @@ class TeleopEnv(gym.Env):
             "time": [], "x_m": [], "x_s": [],
             "v_m": [], "v_s": [],
             "P_m1": [], "P_m2": [], "P_s1": [], "P_s2": [],
-            "F_h": [], "a_m_signal": [], "F_e": [], "u_v": [], "x_v": [],
+            "F_h": [], "F_h_nominal": [], "F_h_noise": [], "a_m_signal": [], "F_e": [], "u_v": [], "x_v": [],
             "env_id": [], "env_label": [],
             "pos_error": [], "transparency_error": [],
             "reward_track": [], "reward_effort": [], "reward_transparency": [],
@@ -389,44 +602,54 @@ class TeleopEnv(gym.Env):
     def _step_with_voltage(self, u_v: float):
         self.last_u_v = u_v
         self._update_environment_mode()
-
-        # Sync legacy aliases with reference trajectory parameters.
-        self.ref_amp = float(getattr(self, "fh_amp", self.ref_amp))
-        self.ref_freq = float(getattr(self, "fh_freq", self.ref_freq))
-        self.ref_phase = float(getattr(self, "fh_phase", self.ref_phase))
-        self.ref_amp = _bounded_ref_amp(self.ref_amp)
-        self.fh_amp = self.ref_amp
-        self.fh_freq = self.ref_freq
-        self.fh_phase = self.ref_phase
+        self._sync_master_input_parameters()
 
         # ── Physics integration (pure-Python fast kernel) ────────
         self.state, self.t = _rk4_substeps(
             self.state, self.t, u_v,
+            self.master_input_mode,
             self.ref_amp, self.ref_freq, self.ref_phase,
+            self.force_amp, self.force_bias, self.force_freq, self.force_phase, self.force_waveform,
+            self.force_noise_std, self.force_noise_components,
             self.Be, self.Ke,
         )
 
         self.step_count += 1
 
-        # Enforce exact master reference values at RL sample time.
-        x_ref, v_ref, a_ref = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
-        self.state[self.IX_XM] = x_ref
-        self.state[self.IX_VM] = v_ref
+        if self.master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+            # Enforce exact master reference values at RL sample time.
+            x_ref, v_ref, a_ref = _master_reference(self.t, self.ref_amp, self.ref_freq, self.ref_phase)
+            self.state[self.IX_XM] = x_ref
+            self.state[self.IX_VM] = v_ref
 
         # --- Extract quantities ----------------------------------
         x_m, v_m = self.state[self.IX_XM], self.state[self.IX_VM]
         x_s, v_s = self.state[self.IX_XS], self.state[self.IX_VS]
         pos_error = x_m - x_s
 
-        # Update stored signal/forces:
-        # - a_m_signal is r¨(t).
-        # - F_h is reflected force from Eq. (2).
-        self.a_m_signal = float(a_ref)
-        self.F_h = float(
-            (self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP
-            - _MP * self.a_m_signal
-            - _BETA * v_m
-        )
+        # Update stored signal/forces using the active master-input mode.
+        if self.master_input_mode == cfg.MASTER_INPUT_REFERENCE:
+            self.a_m_signal = float(a_ref)
+            self.F_h_nominal = 0.0
+            self.F_h_noise = 0.0
+            self.F_h = float(
+                (self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP
+                - _MP * self.a_m_signal
+                - _BETA * v_m
+            )
+        else:
+            self.F_h_nominal, self.F_h_noise, self.F_h = _master_force_components(
+                self.t,
+                self.force_amp,
+                self.force_bias,
+                self.force_freq,
+                self.force_phase,
+                self.force_waveform,
+                self.force_noise_std,
+                self.force_noise_components,
+            )
+            self.F_h = float(self.F_h)
+            self.a_m_signal = float(((self.state[self.IX_PM1] - self.state[self.IX_PM2]) * _AP - _BETA * v_m - self.F_h) / _MP)
         delta_xs = x_s - _X_EQ
         self.F_e = self.Ke * delta_xs + self.Be * v_s
 
@@ -462,6 +685,8 @@ class TeleopEnv(gym.Env):
             self._history["P_s1"].append(self.state[self.IX_PS1])
             self._history["P_s2"].append(self.state[self.IX_PS2])
             self._history["F_h"].append(self.F_h)
+            self._history["F_h_nominal"].append(self.F_h_nominal)
+            self._history["F_h_noise"].append(self.F_h_noise)
             self._history["a_m_signal"].append(self.a_m_signal)
             self._history["F_e"].append(self.F_e)
             self._history["u_v"].append(u_v)
@@ -542,6 +767,8 @@ class TeleopEnv(gym.Env):
             "time": self.t,
             "u_v":  self.last_u_v,
             "F_h":  self.F_h,
+            "F_h_nominal": self.F_h_nominal,
+            "F_h_noise": self.F_h_noise,
             "a_m_signal": self.a_m_signal,
             "F_e":  self.F_e,
             "env_id": self.current_env_id,
@@ -553,6 +780,12 @@ class TeleopEnv(gym.Env):
             "episode_duration": self.episode_duration,
             "env_switch_time": self.env_switch_time,
             "terminate_on_error": self.terminate_on_error,
+            "master_input_mode": self.master_input_mode,
+            "force_bias": getattr(self, "force_bias", None),
+            "force_freq": getattr(self, "force_freq", None),
+            "force_waveform": getattr(self, "force_waveform", None),
+            "force_noise_std": getattr(self, "force_noise_std", None),
+            "force_noise_seed": getattr(self, "force_noise_seed", None),
         }
 
     # ---------- Q-table helpers ----------
@@ -562,12 +795,12 @@ class TeleopEnv(gym.Env):
         return (
             int(np.digitize(obs[0], cfg.SLAVE_POS_ERROR_BINS)),
             int(np.digitize(obs[1], cfg.MASTER_POS_ERROR_BINS)),
-            int(np.digitize(obs[2], cfg.SLAVE_P1_BINS)),
-            int(np.digitize(obs[3], cfg.SLAVE_P2_BINS)),
-            int(np.digitize(obs[4], cfg.MASTER_P1_BINS)),
-            int(np.digitize(obs[5], cfg.MASTER_P2_BINS)),
-            int(np.digitize(obs[6], cfg.MASS_FLOW1_BINS)),
-            int(np.digitize(obs[7], cfg.MASS_FLOW2_BINS)),
+            int(np.digitize(obs[4], cfg.SLAVE_P1_BINS)),
+            int(np.digitize(obs[5], cfg.SLAVE_P2_BINS)),
+            int(np.digitize(obs[6], cfg.MASTER_P1_BINS)),
+            int(np.digitize(obs[7], cfg.MASTER_P2_BINS)),
+            int(np.digitize(obs[8], cfg.MASS_FLOW1_BINS)),
+            int(np.digitize(obs[9], cfg.MASS_FLOW2_BINS)),
         )
 
     def get_state_dims(self) -> tuple[int, ...]:

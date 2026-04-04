@@ -1,13 +1,14 @@
 ﻿"""
-Configuration for bilateral pneumatic teleoperation with RL control.
+Configuration for F_h-driven bilateral pneumatic teleoperation with RL control.
 
 Exact dynamics from:
   "Enhanced MRAC Design Using Filtered Regressors for
    Bilateral Pneumatic Teleoperation Control"
   Aya Abed & Naseem Daher, IC2AI 2025  (DOI: 10.1109/IC2AI62984.2025.10932214)
 
-The RL agent outputs u_v (servo-valve voltage) to make
-the slave piston track the master.
+This top-level TeleopWithRL package is the active working copy for the
+F_h master-input experiments. The archived reference-tracking baseline
+is preserved separately under reference_tracking_RL/TeleopWithRL.
 """
 
 import numpy as np
@@ -55,15 +56,25 @@ FREE_KE   = 0.0          # Free motion [N/m]
 # ================================================================== #
 #  MASTER REFERENCE TRAJECTORY                                       #
 # ================================================================== #
-# Master motion is prescribed by trajectory generator x_m(t)=r(t).
+# Kept for compatibility and side-by-side comparison with the archived
+# reference-tracking setup.
 REF_POS_AMP   = 0.06     # Reference position amplitude [m]
 REF_POS_FREQ  = 0.5      # Reference frequency [Hz]
 REF_POS_PHASE = 0.0      # Reference phase [rad]
 
-# Legacy aliases kept for existing scripts.
+# Legacy aliases kept for older scripts that used fh_* as a reference alias.
 FH_AMP   = REF_POS_AMP
 FH_FREQ  = REF_POS_FREQ
 FH_PHASE = REF_POS_PHASE
+
+# ================================================================== #
+#  MASTER FORCE INPUT                                                #
+# ================================================================== #
+# Paper-faithful option: the master actuator is driven by an
+# externally applied sinusoidal force F_h(t).
+FORCE_INPUT_AMP   = 10.0   # Force amplitude [N]
+FORCE_INPUT_FREQ  = 0.5    # Force frequency [Hz]
+FORCE_INPUT_PHASE = 0.0    # Force phase [rad]
 
 # ================================================================== #
 #  SIMULATION                                                        #
@@ -82,6 +93,13 @@ ENV_MODE_CHANGING = "changing_skin_fat"
 ENV_SWITCH_TIME   = EPISODE_DURATION / 2.0
 ENV_LABELS        = ("skin", "fat")
 N_ENV_CONTEXTS    = len(ENV_LABELS)
+
+# ================================================================== #
+#  MASTER INPUT MODES                                                #
+# ================================================================== #
+MASTER_INPUT_REFERENCE = "reference"
+MASTER_INPUT_FORCE     = "force"
+DEFAULT_MASTER_INPUT_MODE = MASTER_INPUT_FORCE
 
 # ================================================================== #
 #  ACTION SPACE                                                      #
@@ -164,29 +182,34 @@ REDUCED_MASTER_PRESSURE_DIFF_BINS = np.array([
 #  OBSERVATION NORMALIZATION (for DQN / neural-net agents)           #
 # ================================================================== #
 # Each feature is divided by its scale so the observation lives in
-# approximately [-1, 1].  Scales are based on physical operating range.
+# approximately [-1, 1]. For the active F_h setup, velocity scaling uses
+# the larger of the reference-based estimate and the damping-limited
+# master-force estimate.
 OBS_SCALE_POS      = L_CYL / 2.0              # ~0.1375 m  (half-stroke)
-OBS_SCALE_VEL      = 2 * np.pi * REF_POS_FREQ * REF_POS_AMP  # ~0.188 m/s
+REF_VEL_SCALE      = 2 * np.pi * REF_POS_FREQ * REF_POS_AMP
+FORCE_VEL_SCALE    = FORCE_INPUT_AMP / max(BETA, 1e-9)
+OBS_SCALE_VEL      = max(REF_VEL_SCALE, FORCE_VEL_SCALE)
 OBS_SCALE_PRESSURE = P_SUPPLY                  # 600 kPa
 OBS_SCALE_FLOW     = 0.004                     # kg/s  (matches bin extremes)
 
 # ================================================================== #
 #  TERMINATION + REWARD SCALING                                      #
 # ================================================================== #
-# Terminate when tracking error exceeds 3× the reference amplitude.
-POS_ERROR_FAIL_THRESHOLD = 3.0 * REF_POS_AMP          # 0.18 m
-
-# Reward normalisation: use the reference amplitude so that an error
-# equal to the full oscillation swing maps to norm_pos_error ≈ 1.
-MAX_POSITION_ERROR = REF_POS_AMP                       # 0.06 m
+# For the active F_h experiments, use geometry-based limits instead of
+# reference-trajectory amplitude.
+POS_ERROR_FAIL_THRESHOLD = 0.75 * L_CYL
+MAX_POSITION_ERROR = 0.50 * L_CYL
 POS_ERR_NORM_CLIP = 1.0
 
 # Power normalization heuristics for reward scaling.
 V_MAX_GEOM = L_CYL / RL_DT
 F_E_MAX_THEORETICAL = SKIN_KE * (L_CYL / 2.0) + SKIN_BE * V_MAX_GEOM
 # Conservative reflected-force estimate from Eq. (2): pressure + inertia + damping.
-F_H_REF_EST = F_E_MAX_THEORETICAL + MP * (2 * np.pi * REF_POS_FREQ) ** 2 * REF_POS_AMP + BETA * V_MAX_GEOM
-MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + F_H_REF_EST)
+F_H_SCALE_EST = max(
+    FORCE_INPUT_AMP,
+    F_E_MAX_THEORETICAL + MP * (2 * np.pi * REF_POS_FREQ) ** 2 * REF_POS_AMP + BETA * V_MAX_GEOM,
+)
+MAX_POWER_ERROR_THEORETICAL = V_MAX_GEOM * (F_E_MAX_THEORETICAL + F_H_SCALE_EST)
 # Practical scale: based on observed range (~17 W peak with random actions).
 MAX_POWER_ERROR = 20.0
 
@@ -210,10 +233,12 @@ MRAC_G1_GAIN  = 1.0
 # ================================================================== #
 #  PAPER REPLICA PROFILE (IC2AI 2025)                               #
 # ================================================================== #
+PAPER_MASTER_INPUT_MODE = MASTER_INPUT_FORCE
 PAPER_EPISODE_DURATION = 60.0
 PAPER_ENV_SWITCH_TIME  = 30.0
-# Legacy names kept; interpreted as reference trajectory parameters.
-PAPER_FORCE_AMP        = 0.06
+# Paper states a sinusoidal force input of amplitude 10 N is applied
+# to the master actuator.
+PAPER_FORCE_AMP        = 10.0
 PAPER_FORCE_FREQ       = 0.5
 PAPER_FORCE_PHASE      = 0.0
 PAPER_RESULTS_DIR      = "paper_replica"
@@ -234,25 +259,25 @@ EVAL_EPISODES   = 10
 # ================================================================== #
 #  DQN HYPER-PARAMETERS                                               #
 # ================================================================== #
-DQN_LEARNING_RATE          = 1e-3
+DQN_LEARNING_RATE          = 3e-4
 DQN_DISCOUNT_FACTOR        = 0.99
-DQN_REPLAY_BUFFER_SIZE     = 100_000
-DQN_BATCH_SIZE             = 64
-DQN_TARGET_UPDATE_FREQ     = 500       # gradient steps between target-net syncs
+DQN_REPLAY_BUFFER_SIZE     = 500_000
+DQN_BATCH_SIZE             = 128
+DQN_TARGET_UPDATE_FREQ     = 5_000     # gradient steps between target-net syncs
 DQN_HIDDEN_SIZES           = (256, 256)
 DQN_EPSILON_START          = 1.0
 DQN_EPSILON_END            = 0.05
-DQN_NUM_EPISODES           = 10_000
-DQN_EPSILON_DECAY_EPISODES = 8_000
-DQN_EVAL_EVERY             = 100
-DQN_EVAL_EPISODES          = 5
-DQN_MIN_REPLAY_SIZE        = 1_000
+DQN_NUM_EPISODES           = 20_000
+DQN_EPSILON_DECAY_EPISODES = 15_000
+DQN_EVAL_EVERY             = 500
+DQN_EVAL_EPISODES          = 10
+DQN_MIN_REPLAY_SIZE        = 20_000
 DQN_GRAD_CLIP              = 1.0
 
 # ================================================================== #
 #  RESULT FOLDER LAYOUT                                              #
 # ================================================================== #
-RESULTS_ROOT_DIR        = "results"
+RESULTS_ROOT_DIR        = "results_fh"
 DQN_CONSTANT_DIR        = "dqn_constant"
 DQN_CHANGING_DIR        = "dqn_changing"
 Q_LEARNING_CONSTANT_DIR = "q_learning_constant"
