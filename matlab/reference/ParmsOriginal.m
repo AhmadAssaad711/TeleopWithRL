@@ -34,7 +34,7 @@ P_md = R*T*rho0;
 %% Valve Constants
 C_v = 4.5e-9;       % m^3/Pa.s
 b_v = 0.21;         % []
-omega_v = 400*2*pi; % rad/s
+omega_v = 150 %400*2*pi; % rad/s
 K_v = 1/5;          % 1/V
 zeta_v = 0.7;       % []
 

@@ -1,7 +1,7 @@
 """Analyze open-loop plant I/O for the pneumatic teleoperation environment.
 
 Default case:
-  F_h(t) = 10 * sin(2*pi*0.5*t) N
+  F_h(t) = 5 + 10 * sin(0.5*t) N
   u(t)   = 0 V
   environment switches from skin to fat at t = 30 s
   total duration = 180 s
@@ -13,6 +13,11 @@ Outputs:
   - plant_io_error_scopes.png
   - plant_io_switch_zoom.png
   - plant_io_summary.txt
+
+Position convention:
+  x_m and x_s are exported as displacement from equilibrium so the Python
+  traces share the MATLAB GUI's zero-centered position origin. Raw absolute
+  positions are still preserved in the debug NPZ.
 """
 
 from __future__ import annotations
@@ -60,8 +65,11 @@ def _clip_voltage(env: TeleopEnv, u_v: float) -> float:
 
 def _sample_row(env: TeleopEnv, obs: np.ndarray, info: dict[str, Any]) -> dict[str, Any]:
     state = env.state
-    x_m = float(state[env.IX_XM])
-    x_s = float(state[env.IX_XS])
+    x_eq = float(info["x_eq"])
+    x_m_abs = float(state[env.IX_XM])
+    x_s_abs = float(state[env.IX_XS])
+    x_m = float(info["x_m_centered"])
+    x_s = float(info["x_s_centered"])
     v_m = float(state[env.IX_VM])
     v_s = float(state[env.IX_VS])
     e = x_m - x_s
@@ -83,6 +91,9 @@ def _sample_row(env: TeleopEnv, obs: np.ndarray, info: dict[str, Any]) -> dict[s
         "P_m2": float(state[env.IX_PM2]),
         "P_s1": float(state[env.IX_PS1]),
         "P_s2": float(state[env.IX_PS2]),
+        "x_eq": x_eq,
+        "x_m_abs": x_m_abs,
+        "x_s_abs": x_s_abs,
         "mdot_L1": float(state[env.IX_ML1]),
         "mdot_L2": float(state[env.IX_ML2]),
         "x_v": float(state[env.IX_XV]),
@@ -165,8 +176,10 @@ def _write_summary(
         fh.write("============================\n")
         fh.write(f"duration_s={duration:.6f}\n")
         fh.write(f"sample_time_s={cfg.RL_DT:.6f}\n")
+        fh.write("position_origin=equilibrium_centered\n")
+        fh.write(f"equilibrium_position_m={float(arrays['x_eq'][0]):.6f}\n")
         fh.write(f"switch_time_s={switch_time:.6f}\n")
-        fh.write(f"force_waveform=sine\n")
+        fh.write("force_waveform=sine\n")
         fh.write(f"force_amp_n={force_amp:.6f}\n")
         fh.write(f"force_bias_n={force_bias:.6f}\n")
         fh.write(f"force_freq_hz={force_freq:.6f}\n")
@@ -202,8 +215,8 @@ def _plot_scopes(
     t = arrays["t"]
     series = (
         ("F_h", "Input force [N]"),
-        ("x_m", "Master position [m]"),
-        ("x_s", "Slave position [m]"),
+        ("x_m", "Master displacement [m]"),
+        ("x_s", "Slave displacement [m]"),
         ("e", "Tracking error [m]"),
         ("x_mdot", "Master velocity [m/s]"),
         ("x_sdot", "Slave velocity [m/s]"),
@@ -233,8 +246,8 @@ def _plot_switch_zoom(
     t = arrays["t"]
     mask = (t >= max(0.0, switch_time - half_window)) & (t <= switch_time + half_window)
     series = (
-        ("x_m", "Master position [m]"),
-        ("x_s", "Slave position [m]"),
+        ("x_m", "Master displacement [m]"),
+        ("x_s", "Slave displacement [m]"),
         ("e", "Tracking error [m]"),
         ("x_mdot", "Master velocity [m/s]"),
         ("x_sdot", "Slave velocity [m/s]"),
@@ -283,9 +296,9 @@ def run_open_loop_plant_io_analysis(
     *,
     duration: float = 180.0,
     switch_time: float = 30.0,
-    force_amp: float = 10.0,
-    force_bias: float = 0.0,
-    force_freq: float = 0.5,
+    force_amp: float = cfg.FORCE_INPUT_AMP,
+    force_bias: float = cfg.MATLAB_REFERENCE_FORCE_BIAS,
+    force_freq: float = cfg.MATLAB_REFERENCE_FORCE_FREQ_HZ,
     force_phase: float = 0.0,
     u_voltage: float = 0.0,
     out_dir: str | os.PathLike[str] | None = None,
@@ -345,6 +358,9 @@ def run_open_loop_plant_io_analysis(
         u=arrays["u"],
         x_m=arrays["x_m"],
         x_s=arrays["x_s"],
+        x_m_abs=arrays["x_m_abs"],
+        x_s_abs=arrays["x_s_abs"],
+        x_eq=arrays["x_eq"],
         e=arrays["e"],
         Fe=arrays["Fe"],
         transparency_error=arrays["transparency_error"],
@@ -421,9 +437,19 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=30.0,
         help="Time in seconds when the environment switches from skin to fat.",
     )
-    parser.add_argument("--force-amp", type=float, default=10.0, help="Master force amplitude in N.")
-    parser.add_argument("--force-bias", type=float, default=0.0, help="Master force bias in N.")
-    parser.add_argument("--force-freq", type=float, default=0.5, help="Master force frequency in Hz.")
+    parser.add_argument("--force-amp", type=float, default=cfg.FORCE_INPUT_AMP, help="Master force amplitude in N.")
+    parser.add_argument(
+        "--force-bias",
+        type=float,
+        default=cfg.MATLAB_REFERENCE_FORCE_BIAS,
+        help="Master force bias in N.",
+    )
+    parser.add_argument(
+        "--force-freq",
+        type=float,
+        default=cfg.MATLAB_REFERENCE_FORCE_FREQ_HZ,
+        help="Master force frequency in Hz (MATLAB-aligned default).",
+    )
     parser.add_argument("--force-phase", type=float, default=0.0, help="Master force phase in rad.")
     parser.add_argument(
         "--u-voltage",

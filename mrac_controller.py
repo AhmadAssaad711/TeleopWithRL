@@ -254,12 +254,12 @@ def baseline_mrac_inputs(info: dict[str, float]) -> tuple[float, float]:
     """
     return float(info["x_s"] - info["x_m"]), 0.0
 
-def _mk_outdirs() -> dict[str, str]:
+def _mk_outdirs(run_subdir: str = "controller_env_run") -> dict[str, str]:
     base = os.path.join(
         os.path.dirname(__file__),
         cfg.RESULTS_ROOT_DIR,
         cfg.MRAC_RESULTS_DIR,
-        "controller_env_run",
+        run_subdir,
     )
     paths = {
         "base": base,
@@ -279,21 +279,29 @@ def _as_array(values: list[Any]) -> np.ndarray:
         return np.asarray(values, dtype=object)
 
 
-def _save_response_plot(t: np.ndarray, x_m: np.ndarray, x_s: np.ndarray, pe: np.ndarray, out_path: str) -> None:
+def _save_response_plot(
+    t: np.ndarray,
+    x_m: np.ndarray,
+    x_s: np.ndarray,
+    pe: np.ndarray,
+    out_path: str,
+    run_label: str = "TeleopEnv",
+    switch_time_s: float = cfg.PAPER_ENV_SWITCH_TIME,
+) -> None:
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
     axes[0].plot(t, x_m * 1000.0, label="Master position", lw=1.8, color="tab:blue")
     axes[0].plot(t, x_s * 1000.0, label="Slave position", lw=1.8, color="tab:orange")
-    axes[0].axvline(cfg.PAPER_ENV_SWITCH_TIME, color="gray", lw=1.0, ls="--")
+    axes[0].axvline(switch_time_s, color="gray", lw=1.0, ls="--")
     axes[0].set_ylabel("Position [mm]")
-    axes[0].set_title("MRAC on TeleopEnv: Master/Slave Response")
+    axes[0].set_title(f"MRAC on {run_label}: Master/Slave Response")
     axes[0].grid(True, alpha=0.3)
     axes[0].legend()
 
     axes[1].plot(t, pe * 1000.0, lw=1.8, color="tab:red", label="x_m - x_s")
     axes[1].axhline(0.0, color="gray", lw=0.8)
-    axes[1].axvline(cfg.PAPER_ENV_SWITCH_TIME, color="gray", lw=1.0, ls="--")
+    axes[1].axvline(switch_time_s, color="gray", lw=1.0, ls="--")
     axes[1].set_ylabel("Tracking error [mm]")
     axes[1].set_xlabel("Time [s]")
     axes[1].grid(True, alpha=0.3)
@@ -304,7 +312,13 @@ def _save_response_plot(t: np.ndarray, x_m: np.ndarray, x_s: np.ndarray, pe: np.
     plt.close(fig)
 
 
-def _save_theta_plot(t: np.ndarray, theta: np.ndarray, out_path: str) -> None:
+def _save_theta_plot(
+    t: np.ndarray,
+    theta: np.ndarray,
+    out_path: str,
+    run_label: str = "TeleopEnv",
+    switch_time_s: float = cfg.PAPER_ENV_SWITCH_TIME,
+) -> None:
     import matplotlib.pyplot as plt
 
     labels = ("r1_prime", "s0", "s1", "t0", "t1")
@@ -312,8 +326,8 @@ def _save_theta_plot(t: np.ndarray, theta: np.ndarray, out_path: str) -> None:
     fig, ax = plt.subplots(figsize=(12, 5))
     for i, (lbl, c) in enumerate(zip(labels, colors)):
         ax.plot(t, theta[:, i], lw=1.6, color=c, label=lbl)
-    ax.axvline(cfg.PAPER_ENV_SWITCH_TIME, color="gray", lw=1.0, ls="--")
-    ax.set_title("MRAC on TeleopEnv: Adaptive Parameters")
+    ax.axvline(switch_time_s, color="gray", lw=1.0, ls="--")
+    ax.set_title(f"MRAC on {run_label}: Adaptive Parameters")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Parameter value")
     ax.grid(True, alpha=0.3)
@@ -323,13 +337,19 @@ def _save_theta_plot(t: np.ndarray, theta: np.ndarray, out_path: str) -> None:
     plt.close(fig)
 
 
-def _save_control_plot(t: np.ndarray, u: np.ndarray, out_path: str) -> None:
+def _save_control_plot(
+    t: np.ndarray,
+    u: np.ndarray,
+    out_path: str,
+    run_label: str = "TeleopEnv",
+    switch_time_s: float = cfg.PAPER_ENV_SWITCH_TIME,
+) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(12, 4.5))
     ax.plot(t, u, lw=1.8, color="tab:purple")
-    ax.axvline(cfg.PAPER_ENV_SWITCH_TIME, color="gray", lw=1.0, ls="--")
-    ax.set_title("MRAC on TeleopEnv: Control Input")
+    ax.axvline(switch_time_s, color="gray", lw=1.0, ls="--")
+    ax.set_title(f"MRAC on {run_label}: Control Input")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("u_v [V]")
     ax.grid(True, alpha=0.3)
@@ -338,46 +358,66 @@ def _save_control_plot(t: np.ndarray, u: np.ndarray, out_path: str) -> None:
     plt.close(fig)
 
 
-def _save_regressor_plot(t: np.ndarray, phi: np.ndarray, out_path: str) -> None:
+def _save_regressor_plot(
+    t: np.ndarray,
+    phi: np.ndarray,
+    out_path: str,
+    run_label: str = "TeleopEnv",
+    switch_time_s: float = cfg.PAPER_ENV_SWITCH_TIME,
+) -> None:
     import matplotlib.pyplot as plt
 
     labels = ("1/P u", "1/P (s y)", "1/P y", "-1/P (s u_c)", "-1/P u_c")
     fig, axes = plt.subplots(5, 1, figsize=(12, 10), sharex=True)
     for i in range(5):
         axes[i].plot(t, phi[:, i], lw=1.4)
-        axes[i].axvline(cfg.PAPER_ENV_SWITCH_TIME, color="gray", lw=1.0, ls="--")
+        axes[i].axvline(switch_time_s, color="gray", lw=1.0, ls="--")
         axes[i].set_ylabel(labels[i])
         axes[i].grid(True, alpha=0.3)
     axes[-1].set_xlabel("Time [s]")
-    fig.suptitle("MRAC on TeleopEnv: Filtered Regressor Components", y=1.0)
+    fig.suptitle(f"MRAC on {run_label}: Filtered Regressor Components", y=1.0)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
-def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
+def run_mrac_on_teleop_env(
+    seed: int = 0,
+    env_cls=None,
+    env_kwargs: dict | None = None,
+    run_subdir: str = "controller_env_run",
+    run_label: str = "TeleopEnv",
+    configure_default_inputs: bool = True,
+) -> dict[str, str]:
     import matplotlib
-    from teleop_env import TeleopEnv
+    try:
+        from .teleop_env import TeleopEnv as _DefaultTeleopEnv
+    except ImportError:  # pragma: no cover - direct script execution
+        from teleop_env import TeleopEnv as _DefaultTeleopEnv
 
     matplotlib.use("Agg", force=True)
 
-    paths = _mk_outdirs()
-    env = TeleopEnv(
-        env_mode=cfg.ENV_MODE_CHANGING,
-        master_input_mode=cfg.PAPER_MASTER_INPUT_MODE,
-        episode_duration=cfg.PAPER_EPISODE_DURATION,
-        env_switch_time=cfg.PAPER_ENV_SWITCH_TIME,
-        terminate_on_error=False,
-    )
+    env_cls = _DefaultTeleopEnv if env_cls is None else env_cls
+    env_config = {
+        "env_mode": cfg.ENV_MODE_CHANGING,
+        "master_input_mode": cfg.PAPER_MASTER_INPUT_MODE,
+        "episode_duration": cfg.PAPER_EPISODE_DURATION,
+        "env_switch_time": cfg.PAPER_ENV_SWITCH_TIME,
+        "terminate_on_error": False,
+    }
+    env_config.update(env_kwargs or {})
+
+    paths = _mk_outdirs(run_subdir=run_subdir)
+    env = env_cls(**env_config)
     ctrl = FilteredMRACController()
     ctrl.reset()
 
     _, info = env.reset(seed=seed)
-    if env.master_input_mode == cfg.MASTER_INPUT_FORCE:
+    if configure_default_inputs and env.master_input_mode == cfg.MASTER_INPUT_FORCE:
         env.force_amp = float(cfg.PAPER_FORCE_AMP)
         env.force_freq = float(cfg.PAPER_FORCE_FREQ)
         env.force_phase = float(cfg.PAPER_FORCE_PHASE)
-    else:
+    elif configure_default_inputs:
         env.fh_amp = float(cfg.REF_POS_AMP)
         env.fh_freq = float(cfg.REF_POS_FREQ)
         env.fh_phase = float(cfg.REF_POS_PHASE)
@@ -427,6 +467,9 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
     u_v = np.asarray(ctrl_history["u_v"], dtype=np.float64)
 
     episode_npz = os.path.join(paths["episodes"], "mrac_controller_episode.npz")
+    os.makedirs(paths["episodes"], exist_ok=True)
+    os.makedirs(paths["plots"], exist_ok=True)
+    os.makedirs(paths["logs"], exist_ok=True)
     payload: dict[str, np.ndarray] = {}
     for k, v in env_history.items():
         payload[f"env_{k}"] = _as_array(v)
@@ -441,21 +484,29 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
             x_s=x_s,
             pe=pe,
             out_path=os.path.join(paths["plots"], "mrac_response.png"),
+            run_label=run_label,
+            switch_time_s=float(getattr(env, "env_switch_time", cfg.PAPER_ENV_SWITCH_TIME)),
         )
         _save_theta_plot(
             t=t_ctrl,
             theta=theta,
             out_path=os.path.join(paths["plots"], "mrac_theta.png"),
+            run_label=run_label,
+            switch_time_s=float(getattr(env, "env_switch_time", cfg.PAPER_ENV_SWITCH_TIME)),
         )
         _save_control_plot(
             t=t_ctrl,
             u=u_v,
             out_path=os.path.join(paths["plots"], "mrac_control_input.png"),
+            run_label=run_label,
+            switch_time_s=float(getattr(env, "env_switch_time", cfg.PAPER_ENV_SWITCH_TIME)),
         )
         _save_regressor_plot(
             t=t_ctrl,
             phi=phi,
             out_path=os.path.join(paths["plots"], "mrac_regressors.png"),
+            run_label=run_label,
+            switch_time_s=float(getattr(env, "env_switch_time", cfg.PAPER_ENV_SWITCH_TIME)),
         )
 
     rmse_tracking = float(np.sqrt(np.mean(pe ** 2))) if pe.size else float("nan")
@@ -464,9 +515,9 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
 
     summary_path = os.path.join(paths["logs"], "mrac_controller_metrics.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write("MRAC on TeleopEnv metrics\n")
-        f.write(f"duration_s={cfg.PAPER_EPISODE_DURATION:.2f}\n")
-        f.write(f"switch_time_s={cfg.PAPER_ENV_SWITCH_TIME:.2f}\n")
+        f.write(f"MRAC on {run_label} metrics\n")
+        f.write(f"duration_s={float(getattr(env, 'episode_duration', cfg.PAPER_EPISODE_DURATION)):.2f}\n")
+        f.write(f"switch_time_s={float(getattr(env, 'env_switch_time', cfg.PAPER_ENV_SWITCH_TIME)):.2f}\n")
         f.write(f"steps={len(t)}\n")
         f.write(f"tracking_rmse_m={rmse_tracking:.8f}\n")
         f.write(f"transparency_rmse_w={rmse_transparency:.8f}\n")
@@ -474,7 +525,7 @@ def run_mrac_on_teleop_env(seed: int = 0) -> dict[str, str]:
         if theta.ndim == 2 and theta.size:
             f.write("final_theta=" + ",".join(f"{v:.8f}" for v in theta[-1]) + "\n")
 
-    print("MRAC run on TeleopEnv complete.")
+    print(f"MRAC run on {run_label} complete.")
     print(f"Results: {paths['base']}")
     print(f"Episode file: {episode_npz}")
     print(f"Summary: {summary_path}")

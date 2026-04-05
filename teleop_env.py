@@ -491,6 +491,17 @@ class TeleopEnv(gym.Env):
             return
         raise ValueError(f"Unknown env_mode: {self.env_mode}")
 
+    def get_equilibrium_position(self) -> float:
+        """Return the cylinder midpoint used as the displacement reference."""
+        return _X_EQ
+
+    def get_centered_positions(self) -> tuple[float, float]:
+        """Return master/slave displacement from the equilibrium midpoint."""
+        return (
+            float(self.state[self.IX_XM] - _X_EQ),
+            float(self.state[self.IX_XS] - _X_EQ),
+        )
+
     # -------------------------------------------------------------- #
     #  reset                                                          #
     # -------------------------------------------------------------- #
@@ -581,6 +592,7 @@ class TeleopEnv(gym.Env):
         # --- Episode history ----------------------------------------
         self._history = {
             "time": [], "x_m": [], "x_s": [],
+            "x_m_centered": [], "x_s_centered": [],
             "v_m": [], "v_s": [],
             "P_m1": [], "P_m2": [], "P_s1": [], "P_s2": [],
             "F_h": [], "F_h_nominal": [], "F_h_noise": [], "a_m_signal": [], "F_e": [], "u_v": [], "x_v": [],
@@ -625,6 +637,7 @@ class TeleopEnv(gym.Env):
         # --- Extract quantities ----------------------------------
         x_m, v_m = self.state[self.IX_XM], self.state[self.IX_VM]
         x_s, v_s = self.state[self.IX_XS], self.state[self.IX_VS]
+        x_m_centered, x_s_centered = self.get_centered_positions()
         pos_error = x_m - x_s
 
         # Update stored signal/forces using the active master-input mode.
@@ -678,6 +691,8 @@ class TeleopEnv(gym.Env):
             self._history["time"].append(self.t)
             self._history["x_m"].append(x_m)
             self._history["x_s"].append(x_s)
+            self._history["x_m_centered"].append(x_m_centered)
+            self._history["x_s_centered"].append(x_s_centered)
             self._history["v_m"].append(v_m)
             self._history["v_s"].append(v_s)
             self._history["P_m1"].append(self.state[self.IX_PM1])
@@ -763,6 +778,7 @@ class TeleopEnv(gym.Env):
         ], dtype=np.float32)
 
     def _get_info(self) -> dict:
+        x_m_centered, x_s_centered = self.get_centered_positions()
         return {
             "time": self.t,
             "u_v":  self.last_u_v,
@@ -775,6 +791,9 @@ class TeleopEnv(gym.Env):
             "env_label": self.current_env_label,
             "x_m":  self.state[self.IX_XM],
             "x_s":  self.state[self.IX_XS],
+            "x_eq": _X_EQ,
+            "x_m_centered": x_m_centered,
+            "x_s_centered": x_s_centered,
             "step_count": self.step_count,
             "max_steps": self.max_steps,
             "episode_duration": self.episode_duration,

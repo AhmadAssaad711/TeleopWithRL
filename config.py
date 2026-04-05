@@ -11,6 +11,8 @@ F_h master-input experiments. The archived reference-tracking baseline
 is preserved separately under reference_tracking_RL/TeleopWithRL.
 """
 
+import os
+
 import numpy as np
 
 # ================================================================== #
@@ -24,8 +26,8 @@ DT_TUBE   = 4e-3         # Tube diameter [m]
 L_TUBE    = 10.0         # Pneumatic line length [m]
 L_CYL     = 0.275        # Total cylinder stroke [m]
 MP        = 0.25         # Piston mass [kg]
-VMD       = 2e-6         # Dead volume [m^3]
-BETA      = 11.6         # Viscous friction coeff [Ns/m]
+VMD       = 2.4797e-5    # Dead volume [m^3] (matches MATLAB ParmsOriginal.m)
+BETA      = 0.33 * 35.0  # Viscous friction coeff [Ns/m] (matches SI_NonLinear.m)
 NU        = 1.57e-5      # Kinematic viscosity [m^2/s]
 MU        = 1.813e-5     # Dynamic viscosity [Ns/m^2]
 R_GAS     = 287.0        # Ideal gas constant (air) [J/(kg*K)]
@@ -34,14 +36,14 @@ RHO0      = 1.204        # Reference air density [kg/m^3]
 # ================================================================== #
 #  ADDITIONAL PARAMETERS                                             #
 # ================================================================== #
-T_AIR     = 293.0        # Air temperature [K]
-T0_REF    = 293.0        # Reference temperature [K]
-P_ATM     = 101_325.0    # Atmospheric pressure [Pa]
-P_SUPPLY  = 600_000.0    # Supply pressure [Pa]
+T_AIR     = 273.15 + 20.0  # Air temperature [K] (matches SI_NonLinear.m)
+T0_REF    = 273.15 + 20.0  # Reference temperature [K]
+P_ATM     = 1.013e5        # Atmospheric pressure [Pa]
+P_SUPPLY  = 3e5            # Supply pressure [Pa]
 
-OMEGA_V   = 100.0        # Valve natural frequency [rad/s]
+OMEGA_V   = 400.0 * 2.0 * np.pi  # Valve natural frequency [rad/s] (matches MATLAB GUI)
 ZETA_V    = 0.7          # Valve damping ratio [-]
-KV        = 0.1          # Valve gain [1/V]
+KV        = 1.0 / 5.0    # Valve gain [1/V]
 
 # ================================================================== #
 #  ENVIRONMENT MODELS                                                #
@@ -75,6 +77,14 @@ FH_PHASE = REF_POS_PHASE
 FORCE_INPUT_AMP   = 10.0   # Force amplitude [N]
 FORCE_INPUT_FREQ  = 0.5    # Force frequency [Hz]
 FORCE_INPUT_PHASE = 0.0    # Force phase [rad]
+
+# Saved top-level Simulink reference input:
+#   F_h(t) = 5 + 10*sin(0.5*t)
+# The Simulink Sine Wave block is time-based, so its frequency parameter is
+# interpreted directly in the block's native form; the Python env expects Hz.
+MATLAB_REFERENCE_FORCE_BIAS = 5.0
+MATLAB_REFERENCE_SINE_FREQ_RAD = 0.5
+MATLAB_REFERENCE_FORCE_FREQ_HZ = MATLAB_REFERENCE_SINE_FREQ_RAD / (2.0 * np.pi)
 
 # ================================================================== #
 #  SIMULATION                                                        #
@@ -277,7 +287,7 @@ DQN_GRAD_CLIP              = 1.0
 # ================================================================== #
 #  RESULT FOLDER LAYOUT                                              #
 # ================================================================== #
-RESULTS_ROOT_DIR        = "results_fh"
+RESULTS_ROOT_DIR        = os.environ.get("TELEOP_RESULTS_ROOT_DIR", "results_fh")
 DQN_CONSTANT_DIR        = "dqn_constant"
 DQN_CHANGING_DIR        = "dqn_changing"
 Q_LEARNING_CONSTANT_DIR = "q_learning_constant"

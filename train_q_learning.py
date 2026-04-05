@@ -55,20 +55,27 @@ def train_q_learning(
     total_episodes: int = cfg.NUM_EPISODES,
     env_mode: str = cfg.ENV_MODE_CHANGING,
     master_input_mode: str = cfg.DEFAULT_MASTER_INPUT_MODE,
+    env_cls=None,
+    env_kwargs: dict | None = None,
+    results_dir_name: str | None = None,
 ) -> None:
-    out_name = _out_dir(env_mode)
+    out_name = results_dir_name or _out_dir(env_mode)
     paths = _mk_dirs(out_name)
+    env_cls = TeleopEnv if env_cls is None else env_cls
+    env_kwargs = dict(env_kwargs or {})
 
-    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
+    env = env_cls(env_mode=env_mode, master_input_mode=master_input_mode, **env_kwargs)
     state_dims = env.get_state_dims_reduced()
     agent = QLearningAgent(state_dims=state_dims, n_actions=cfg.N_ACTIONS, seed=42)
 
-    print(f"Q-learning training (reduced 4-D) | episodes={total_episodes} | "
-          f"env_mode={env_mode} | master_input_mode={master_input_mode} | state_dims={state_dims}")
-    print(f"Output → {paths['base']}")
+    print(
+        f"Q-learning training (reduced 4-D) | episodes={total_episodes} | "
+        f"env_mode={env_mode} | master_input_mode={master_input_mode} | state_dims={state_dims}"
+    )
+    print(f"Output -> {paths['base']}")
 
-    ep_returns     = np.zeros(total_episodes, dtype=np.float64)
-    ep_track_rmse  = np.zeros(total_episodes, dtype=np.float64)
+    ep_returns = np.zeros(total_episodes, dtype=np.float64)
+    ep_track_rmse = np.zeros(total_episodes, dtype=np.float64)
     ep_transp_rmse = np.zeros(total_episodes, dtype=np.float64)
     total_steps = 0
 
@@ -93,9 +100,9 @@ def train_q_learning(
         h = env.render() or {}
         pe = np.asarray(h.get("pos_error", []), dtype=np.float64)
         te = np.asarray(h.get("transparency_error", []), dtype=np.float64)
-        ep_returns[ep]     = ep_ret
-        ep_track_rmse[ep]  = float(np.sqrt(np.mean(pe**2))) if pe.size else 0.0
-        ep_transp_rmse[ep] = float(np.sqrt(np.mean(te**2))) if te.size else 0.0
+        ep_returns[ep] = ep_ret
+        ep_track_rmse[ep] = float(np.sqrt(np.mean(pe ** 2))) if pe.size else 0.0
+        ep_transp_rmse[ep] = float(np.sqrt(np.mean(te ** 2))) if te.size else 0.0
 
         if ep == 0 or (ep + 1) % PRINT_EVERY == 0 or (ep + 1) == total_episodes:
             w = min(ep + 1, 100)
@@ -104,28 +111,34 @@ def train_q_learning(
                 f"[Q-LR] ep {ep+1:>5}/{total_episodes} | "
                 f"eps {agent.epsilon:.4f} | "
                 f"avgR({w}) {np.mean(ep_returns[s:ep+1]):+9.2f} | "
-                f"TE {np.mean(ep_track_rmse[s:ep+1])*1000:7.2f} mm | "
+                f"TE {np.mean(ep_track_rmse[s:ep+1]) * 1000:7.2f} mm | "
                 f"TrE {np.mean(ep_transp_rmse[s:ep+1]):7.4f} W | "
                 f"states {agent.discovered_states()} | "
                 f"cov {agent.coverage():.1%}"
             )
 
-    # ---- Save model + logs ----------------------------------------
     agent.save(os.path.join(paths["models"], "q_table.npy"))
-    np.savez(os.path.join(paths["logs"], "training_log.npz"),
-             episode_returns=ep_returns,
-             episode_tracking_rmse=ep_track_rmse,
-             episode_transparency_rmse=ep_transp_rmse)
+    np.savez(
+        os.path.join(paths["logs"], "training_log.npz"),
+        episode_returns=ep_returns,
+        episode_tracking_rmse=ep_track_rmse,
+        episode_transparency_rmse=ep_transp_rmse,
+    )
 
-    # ---- Greedy evaluation episode --------------------------------
-    eval_hist = _evaluate_greedy(agent, env_mode, master_input_mode)
-    np.savez(os.path.join(paths["episodes"], "greedy_eval_episode.npz"),
-             **{k: np.array(v, dtype=object) for k, v in eval_hist.items()})
+    eval_hist = _evaluate_greedy(
+        agent,
+        env_mode,
+        master_input_mode,
+        env_cls=env_cls,
+        env_kwargs=env_kwargs,
+    )
+    np.savez(
+        os.path.join(paths["episodes"], "greedy_eval_episode.npz"),
+        **{k: np.array(v, dtype=object) for k, v in eval_hist.items()},
+    )
 
-    # ---- Plots ----------------------------------------------------
     _save_plots(ep_returns, ep_track_rmse, ep_transp_rmse, paths["plots"])
 
-    # ---- Summary --------------------------------------------------
     pe_ev = np.asarray(eval_hist.get("pos_error", []), dtype=np.float64)
     te_ev = np.asarray(eval_hist.get("transparency_error", []), dtype=np.float64)
     with open(os.path.join(paths["logs"], "summary.txt"), "w") as f:
@@ -138,8 +151,8 @@ def train_q_learning(
         f.write(f"discovered_states={agent.discovered_states()}\n")
         f.write(f"action_coverage={agent.coverage():.6f}\n")
         f.write(f"final_epsilon={agent.epsilon:.6f}\n")
-        f.write(f"eval_tracking_rmse_m={float(np.sqrt(np.mean(pe_ev**2))) if pe_ev.size else float('nan'):.8f}\n")
-        f.write(f"eval_transparency_rmse_w={float(np.sqrt(np.mean(te_ev**2))) if te_ev.size else float('nan'):.8f}\n")
+        f.write(f"eval_tracking_rmse_m={float(np.sqrt(np.mean(pe_ev ** 2))) if pe_ev.size else float('nan'):.8f}\n")
+        f.write(f"eval_transparency_rmse_w={float(np.sqrt(np.mean(te_ev ** 2))) if te_ev.size else float('nan'):.8f}\n")
 
     print("Training complete.")
 
@@ -147,8 +160,12 @@ def train_q_learning(
 # ------------------------------------------------------------------ #
 
 def _evaluate_greedy(agent: QLearningAgent,
-                     env_mode: str, master_input_mode: str) -> dict:
-    env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
+                     env_mode: str, master_input_mode: str,
+                     env_cls=None,
+                     env_kwargs: dict | None = None) -> dict:
+    env_cls = TeleopEnv if env_cls is None else env_cls
+    env_kwargs = dict(env_kwargs or {})
+    env = env_cls(env_mode=env_mode, master_input_mode=master_input_mode, **env_kwargs)
     zero_action = int(np.argmin(np.abs(cfg.V_LEVELS)))
     obs, _ = env.reset(seed=123)
     state = env.discretise_obs_reduced(obs)
