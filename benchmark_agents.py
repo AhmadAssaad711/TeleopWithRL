@@ -151,7 +151,19 @@ def _train_dqn(env_mode: str, out_name: str,
                num_episodes: int = cfg.DQN_NUM_EPISODES) -> tuple[DQNAgent, EvalResult]:
     dirs = _mk_agent_dirs(out_name)
     env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
-    agent = DQNAgent(obs_dim=10, n_actions=cfg.N_ACTIONS, seed=42)
+    epsilon_decay = DQNAgent.decay_for_horizon(
+        cfg.DQN_EPSILON_START,
+        cfg.DQN_EPSILON_END,
+        num_episodes,
+    )
+    agent = DQNAgent(
+        obs_dim=10,
+        n_actions=cfg.N_ACTIONS,
+        seed=42,
+        epsilon_start=cfg.DQN_EPSILON_START,
+        epsilon_end=cfg.DQN_EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     ep_rewards = np.zeros(num_episodes, dtype=np.float64)
     print(f"Training DQN ({out_name}) for {num_episodes} episodes …")
@@ -190,6 +202,10 @@ def _train_dqn(env_mode: str, out_name: str,
         f.write(f"mean_reward={test_ev.mean_reward:.6f}\n")
         f.write(f"tracking_rmse_mm={test_ev.tracking_rmse_m*1000:.6f}\n")
         f.write(f"transparency_rmse_w={test_ev.transparency_rmse:.6f}\n")
+        f.write(f"epsilon_start={cfg.DQN_EPSILON_START:.6f}\n")
+        f.write(f"epsilon_end={cfg.DQN_EPSILON_END:.6f}\n")
+        f.write(f"epsilon_decay={epsilon_decay:.12f}\n")
+        f.write(f"final_epsilon={agent.epsilon:.6f}\n")
 
     ev = _evaluate_dqn(agent, env_mode, master_input_mode, n_episodes=cfg.DQN_EVAL_EPISODES)
     np.savez(os.path.join(dirs["episodes"], "eval_episode.npz"),
@@ -203,7 +219,19 @@ def _train_ql(env_mode: str, out_name: str,
     dirs = _mk_agent_dirs(out_name)
     env = TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     state_dims = env.get_state_dims_reduced()
-    agent = QLearningAgent(state_dims, cfg.N_ACTIONS, seed=42)
+    epsilon_decay = QLearningAgent.decay_for_horizon(
+        cfg.EPSILON_START,
+        cfg.EPSILON_END,
+        num_episodes,
+    )
+    agent = QLearningAgent(
+        state_dims,
+        cfg.N_ACTIONS,
+        seed=42,
+        epsilon_start=cfg.EPSILON_START,
+        epsilon_end=cfg.EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     ep_rewards = np.zeros(num_episodes, dtype=np.float64)
     print(f"Training Q-learning ({out_name}) for {num_episodes} episodes …")

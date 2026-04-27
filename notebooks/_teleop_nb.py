@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import csv
+import html
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Iterable
+
+from IPython.display import HTML, Image, Markdown, display
+
+
+def _looks_like_repo_root(path: Path) -> bool:
+    return (path / "matlab_literal_env").exists() and (path / "notebooks" / "_teleop_nb.py").exists()
+
+
+def find_repo_root(start: str | Path | None = None) -> Path:
+    path = Path(start or Path.cwd()).resolve()
+    for candidate in [path, *path.parents]:
+        if _looks_like_repo_root(candidate):
+            return candidate
+        nested = candidate / "TeleopWithRL"
+        if _looks_like_repo_root(nested):
+            return nested
+    raise RuntimeError("Could not find TeleopWithRL repo root from current working directory.")
+
+
+def repo_paths(start: str | Path | None = None) -> dict[str, Path]:
+    repo = find_repo_root(start)
+    return {
+        "repo": repo,
+        "matlab_literal_env": repo / "matlab_literal_env",
+        "notebooks": repo / "notebooks",
+        "results_index": repo / "results_index",
+        "matlab_results": repo / "matlab_literal_env" / "results",
+        "dqn_results": repo / "matlab_literal_env" / "dqn_experiments" / "results",
+        "ql_results": repo / "matlab_literal_env" / "ql_experiments" / "results",
+    }
+
+
+def project_python_executable(start: str | Path | None = None) -> Path:
+    repo = find_repo_root(start)
+    workspace = repo.parent
+    python_rel = Path(".venv") / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+    for root in (workspace, repo):
+        candidate = (root / python_rel).resolve()
+        if candidate.exists():
+            return candidate
+    return Path(sys.executable).resolve()
+
+
+def show_markdown(text: str) -> None:
+    display(Markdown(text))
+
+
+def _rows_to_html(rows: list[dict], max_rows: int = 20) -> str:
+    if not rows:
+        return "<p><em>No rows found.</em></p>"
+    headers = list(rows[0].keys())
+    body_rows = rows[:max_rows]
+    parts = [
+        "<table>",
+        "<thead><tr>",
+        *[f"<th>{html.escape(str(h))}</th>" for h in headers],
+        "</tr></thead><tbody>",
+    ]
+    for row in body_rows:
+        parts.append("<tr>")
+        parts.extend(f"<td>{html.escape(str(row.get(h, '')))}</td>" for h in headers)
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    if len(rows) > max_rows:
+        parts.append(f"<p><em>Showing {max_rows} of {len(rows)} rows.</em></p>")
+    return "".join(parts)
+
+
+def show_rows(rows: list[dict], title: str | None = None, max_rows: int = 20) -> None:
+    if title:
+        show_markdown(f"### {title}")
+    display(HTML(_rows_to_html(rows, max_rows=max_rows)))
+
+
+def load_json(path: str | Path) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def show_json(path: str | Path, title: str | None = None, keys: Iterable[str] | None = None) -> None:
+    file_path = Path(path)
+    if title:
+        show_markdown(f"### {title}")
+    if not file_path.exists():
+        show_markdown(f"_Missing file_: `{file_path}`")
+        return
+    data = load_json(file_path)
+    if keys is not None:
+        data = {key: data.get(key) for key in keys}
+    show_rows([data], title=f"`{file_path}`", max_rows=1)
+
+
+def load_csv_rows(path: str | Path) -> list[dict]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def show_csv(path: str | Path, title: str | None = None, max_rows: int = 20) -> None:
+    file_path = Path(path)
+    if title:
+        show_markdown(f"### {title}")
+    if not file_path.exists():
+        show_markdown(f"_Missing file_: `{file_path}`")
+        return
+    rows = load_csv_rows(file_path)
+    show_rows(rows, title=f"`{file_path}`", max_rows=max_rows)
+
+
+def show_image(path: str | Path, title: str | None = None, width: int = 1200) -> None:
+    file_path = Path(path)
+    if title:
+        show_markdown(f"### {title}")
+    if not file_path.exists():
+        show_markdown(f"_Missing image_: `{file_path}`")
+        return
+    display(Image(filename=str(file_path), width=width))
+
+
+def subdirs(path: str | Path, limit: int = 25) -> list[dict]:
+    root = Path(path)
+    if not root.exists():
+        return []
+    return [{"name": child.name, "path": str(child)} for child in sorted(root.iterdir()) if child.is_dir()][:limit]
+
+
+def count_tree(root: str | Path) -> dict:
+    path = Path(root)
+    return {
+        "root": str(path),
+        "dirs": sum(1 for item in path.rglob("*") if item.is_dir()),
+        "files": sum(1 for item in path.rglob("*") if item.is_file()),
+    }

@@ -63,7 +63,19 @@ def train_dqn(
     print(f"Output -> {paths['base']}")
 
     env = env_cls(env_mode=env_mode, master_input_mode=master_input_mode, **env_kwargs)
-    agent = DQNAgent(obs_dim=10, n_actions=cfg.N_ACTIONS, seed=42)
+    epsilon_decay = DQNAgent.decay_for_horizon(
+        cfg.DQN_EPSILON_START,
+        cfg.DQN_EPSILON_END,
+        total_episodes,
+    )
+    agent = DQNAgent(
+        obs_dim=10,
+        n_actions=cfg.N_ACTIONS,
+        seed=42,
+        epsilon_start=cfg.DQN_EPSILON_START,
+        epsilon_end=cfg.DQN_EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     ep_returns = np.zeros(total_episodes, dtype=np.float64)
     ep_track_rmse = np.zeros(total_episodes, dtype=np.float64)
@@ -138,6 +150,9 @@ def train_dqn(
         f.write(f"total_episodes={total_episodes}\n")
         f.write(f"total_env_steps={total_steps}\n")
         f.write(f"grad_steps={agent.train_step_count}\n")
+        f.write(f"epsilon_start={cfg.DQN_EPSILON_START:.6f}\n")
+        f.write(f"epsilon_end={cfg.DQN_EPSILON_END:.6f}\n")
+        f.write(f"epsilon_decay={epsilon_decay:.12f}\n")
         f.write(f"final_epsilon={agent.epsilon:.6f}\n")
         f.write(f"eval_tracking_rmse_m={float(np.sqrt(np.mean(pe_ev ** 2))) if pe_ev.size else float('nan'):.8f}\n")
         f.write(f"eval_transparency_rmse_w={float(np.sqrt(np.mean(te_ev ** 2))) if te_ev.size else float('nan'):.8f}\n")

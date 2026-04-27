@@ -9,6 +9,7 @@ if __package__ in (None, ""):
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
     from TeleopWithRL import config as cfg
+    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
     from TeleopWithRL.mrac_controller import run_mrac_on_teleop_env
     from TeleopWithRL.matlab_literal_env.simuoriginal_env import SimuOriginalReplicaEnv
     from TeleopWithRL.matlab_literal_env.scripts._common import (
@@ -18,6 +19,7 @@ if __package__ in (None, ""):
     )
 else:
     from ... import config as cfg
+    from ..simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
     from ...mrac_controller import run_mrac_on_teleop_env
     from ..simuoriginal_env import SimuOriginalReplicaEnv
     from ._common import DEFAULT_RESULTS_ROOT, configure_results_root, replica_env_kwargs_from_args
@@ -37,9 +39,10 @@ def main() -> None:
     parser.add_argument("--force-freq-rad", type=float, default=None)
     parser.add_argument("--force-phase", type=float, default=cfg.PAPER_FORCE_PHASE)
     parser.add_argument("--force-waveform", choices=["sine", "cosine", "square", "multisine"], default="sine")
+    parser.add_argument("--fe-mode", choices=FE_MODE_CHOICES, default=FE_MODE_GUI)
     args = parser.parse_args()
 
-    configure_results_root(args.results_root)
+    configure_results_root(args.results_root, args.fe_mode)
     env_kwargs = replica_env_kwargs_from_args(
         args,
         episode_duration=cfg.PAPER_EPISODE_DURATION,

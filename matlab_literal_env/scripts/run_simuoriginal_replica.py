@@ -5,7 +5,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+from TeleopWithRL import config as cfg
 from TeleopWithRL.matlab_literal_env.simuoriginal_replica import (
+    FE_MODE_CHOICES,
+    FE_MODE_GUI,
     ParmsOriginal,
     SimuOriginalProfile,
     saved_force_input,
@@ -20,6 +23,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--duration", type=float, default=40.0)
     parser.add_argument(
+        "--env-switch-time",
+        type=float,
+        default=SimuOriginalProfile().env_switch_time,
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=Path("TeleopWithRL/matlab_literal_env/results/simuoriginal_replica_saved_open_loop"),
@@ -27,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-amp", type=float, default=10.0)
     parser.add_argument("--force-bias", type=float, default=5.0)
     parser.add_argument("--force-freq-rad", type=float, default=0.5)
+    parser.add_argument("--fe-mode", choices=FE_MODE_CHOICES, default=FE_MODE_GUI)
     parser.add_argument("--u-constant", type=float, default=0.0)
     parser.add_argument(
         "--valve-pressure-source",
@@ -46,6 +55,7 @@ def main() -> None:
         force_amplitude=args.force_amp,
         force_bias=args.force_bias,
         force_frequency_rad=args.force_freq_rad,
+        env_switch_time=args.env_switch_time,
         valve_branch_1_pressure_source=args.valve_pressure_source,
         valve_branch_2_pressure_source=args.valve_pressure_source,
     )
@@ -59,6 +69,7 @@ def main() -> None:
         profile=profile,
         F_h_fn=force_fn,
         u_fn=control_fn,
+        fe_mode=args.fe_mode,
     )
     write_simuoriginal_result(result, args.out_dir)
 
@@ -82,6 +93,8 @@ def main() -> None:
     axes[2].set_ylabel("Pressure [Pa]")
 
     axes[3].plot(result.time, result.Fe, label="Fe")
+    # Switched dynamics force reference:
+    # axes[3].plot(result.time, result.Fe_dynamics, label="Fe_dynamics", linestyle="--")
     axes[3].plot(result.time, result.xm_dot, label="xm_dot")
     axes[3].plot(result.time, result.xs_dot, label="xs_dot")
     axes[3].legend(loc="best")

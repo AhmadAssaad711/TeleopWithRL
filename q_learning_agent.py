@@ -18,11 +18,30 @@ except ImportError:  # pragma: no cover - direct script execution
 class QLearningAgent:
     """Tabular Q-learning with epsilon-greedy exploration (sparse state map)."""
 
+    @staticmethod
+    def decay_for_horizon(
+        epsilon_start: float,
+        epsilon_end: float,
+        horizon_episodes: int,
+    ) -> float:
+        """Return multiplicative decay that reaches epsilon_end over the given horizon."""
+        start = float(epsilon_start)
+        end = float(epsilon_end)
+        horizon = max(1, int(horizon_episodes))
+        if start <= 0.0 or end <= 0.0:
+            raise ValueError("epsilon_start and epsilon_end must be positive")
+        if end >= start:
+            return 1.0
+        return float((end / start) ** (1.0 / horizon))
+
     def __init__(
         self,
         state_dims: tuple[int, ...],
         n_actions: int,
         seed: int | None = None,
+        epsilon_start: float | None = None,
+        epsilon_end: float | None = None,
+        epsilon_decay: float | None = None,
     ):
         self.state_dims = tuple(int(d) for d in state_dims)
         self.n_actions = int(n_actions)
@@ -40,9 +59,9 @@ class QLearningAgent:
         # Hyper-parameters
         self.lr = cfg.LEARNING_RATE
         self.gamma = cfg.DISCOUNT_FACTOR
-        self.epsilon = cfg.EPSILON_START
-        self.epsilon_min = cfg.EPSILON_END
-        self.epsilon_decay = cfg.EPSILON_DECAY
+        self.epsilon = float(cfg.EPSILON_START if epsilon_start is None else epsilon_start)
+        self.epsilon_min = float(cfg.EPSILON_END if epsilon_end is None else epsilon_end)
+        self.epsilon_decay = float(cfg.EPSILON_DECAY if epsilon_decay is None else epsilon_decay)
 
     @staticmethod
     def _as_key(state: tuple[int, ...]) -> tuple[int, ...]:

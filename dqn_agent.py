@@ -93,11 +93,25 @@ class DQNNetwork(nn.Module):
 class DQNAgent:
     """Standard DQN with target network and experience replay."""
 
+    @staticmethod
+    def decay_for_horizon(
+        epsilon_start: float,
+        epsilon_end: float,
+        total_episodes: int,
+    ) -> float:
+        horizon = max(1, int(total_episodes))
+        start = max(float(epsilon_start), 1e-12)
+        end = max(min(float(epsilon_end), start), 1e-12)
+        return float((end / start) ** (1.0 / horizon))
+
     def __init__(
         self,
         obs_dim: int = 10,
         n_actions: int = cfg.N_ACTIONS,
         seed: int | None = None,
+        epsilon_start: float | None = None,
+        epsilon_end: float | None = None,
+        epsilon_decay: float | None = None,
     ):
         self.obs_dim = obs_dim
         self.n_actions = n_actions
@@ -106,11 +120,12 @@ class DQNAgent:
         self.gamma      = cfg.DQN_DISCOUNT_FACTOR
         self.batch_size = cfg.DQN_BATCH_SIZE
         self.target_update_freq = cfg.DQN_TARGET_UPDATE_FREQ
-        self.epsilon     = cfg.DQN_EPSILON_START
-        self.epsilon_end = cfg.DQN_EPSILON_END
-        self.epsilon_decay = (
-            (cfg.DQN_EPSILON_END / cfg.DQN_EPSILON_START)
-            ** (1.0 / cfg.DQN_EPSILON_DECAY_EPISODES)
+        self.epsilon = float(cfg.DQN_EPSILON_START if epsilon_start is None else epsilon_start)
+        self.epsilon_end = float(cfg.DQN_EPSILON_END if epsilon_end is None else epsilon_end)
+        self.epsilon_decay = float(
+            self.decay_for_horizon(self.epsilon, self.epsilon_end, cfg.DQN_EPSILON_DECAY_EPISODES)
+            if epsilon_decay is None
+            else epsilon_decay
         )
         self.min_replay_size = cfg.DQN_MIN_REPLAY_SIZE
         self.grad_clip = cfg.DQN_GRAD_CLIP
@@ -144,6 +159,36 @@ class DQNAgent:
             t = torch.as_tensor(obs, dtype=torch.float32,
                                 device=self.device).unsqueeze(0)
             return int(self.policy_net(t).argmax(dim=1).item())
+
+    def q_values_batch(self, obs_batch: np.ndarray) -> np.ndarray:
+        """Return Q(s, :) for a batch of observations without exploration."""
+        obs_batch = np.asarray(obs_batch, dtype=np.float32)
+        if obs_batch.ndim == 1:
+            obs_batch = obs_batch.reshape(1, -1)
+        with torch.no_grad():
+            t = torch.as_tensor(obs_batch, dtype=torch.float32, device=self.device)
+            q = self.policy_net(t).cpu().numpy()
+        return np.asarray(q, dtype=np.float64)
+
+    def select_actions_batch(
+        self,
+        obs_batch: np.ndarray,
+        q_values: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Vectorized epsilon-greedy action selection for a batch."""
+        obs_batch = np.asarray(obs_batch, dtype=np.float32)
+        if obs_batch.ndim == 1:
+            obs_batch = obs_batch.reshape(1, -1)
+        batch_size = int(obs_batch.shape[0])
+        if q_values is None:
+            q_values = self.q_values_batch(obs_batch)
+        q_values = np.asarray(q_values, dtype=np.float64)
+        greedy = np.argmax(q_values, axis=1).astype(np.int64, copy=False)
+        explore_mask = self.rng.random(batch_size) < self.epsilon
+        if np.any(explore_mask):
+            greedy = np.array(greedy, copy=True)
+            greedy[explore_mask] = self.rng.integers(self.n_actions, size=int(np.sum(explore_mask)))
+        return greedy
 
     def q_values(self, obs: np.ndarray) -> np.ndarray:
         """Return Q(s, :) for one observation without applying epsilon-greedy."""

@@ -12,6 +12,10 @@ import numpy as np
 
 ArrayLike = np.ndarray
 
+FE_MODE_GUI = "gui_skin_locked"
+FE_MODE_DYNAMICS = "switched_dynamics"
+FE_MODE_CHOICES = (FE_MODE_GUI, FE_MODE_DYNAMICS)
+
 
 @dataclass(frozen=True)
 class ParmsOriginal:
@@ -164,17 +168,31 @@ class SimuOriginalResult:
     singularity_time: Optional[float]
 
 
-def build_saved_simuoriginal_state(parms: Optional[ParmsOriginal] = None) -> SimuOriginalState:
+def build_saved_simuoriginal_state(
+    parms: Optional[ParmsOriginal] = None,
+    *,
+    init_position_mode: str = "midpoint",
+) -> SimuOriginalState:
     parms = parms or ParmsOriginal()
+    midpoint = 0.5 * float(parms.l_cyl)
+    mode = str(init_position_mode).strip().lower()
+    if mode == "midpoint":
+        xm0 = midpoint
+        xs0 = midpoint
+    elif mode in {"zero", "origin", "legacy"}:
+        xm0 = 0.0
+        xs0 = 0.0
+    else:
+        raise ValueError(f"Unknown init_position_mode: {init_position_mode}")
     return SimuOriginalState(
         Pm1=parms.P_md,
         Pm2=parms.P_md,
         xm_dot=0.0,
-        xm=0.0,
+        xm=xm0,
         Ps1=parms.P_md,
         Ps2=parms.P_md,
         xs_dot=0.0,
-        xs=0.0,
+        xs=xs0,
         mL1_dot=0.0,
         mL2_dot=0.0,
         x_v=0.0,
@@ -199,13 +217,69 @@ def saved_control_input(_t: float, profile: Optional[SimuOriginalProfile] = None
 
 
 def saved_environment(t: float, profile: Optional[SimuOriginalProfile] = None) -> tuple[float, float]:
+    """Return the active environment coefficients at time ``t``.
+
+    The plant is skin before ``env_switch_time`` and fat after it. Keeping this
+    logic in a single helper avoids accidentally mixing switched slave dynamics
+    with a stale force-output formula elsewhere in the code.
+    """
     profile = profile or SimuOriginalProfile()
-    Ke = profile.skin_Ke
-    Be = profile.skin_Be
-    if t >= profile.env_switch_time:
-        Ke += profile.delta_Ke_after_switch
-        Be += profile.delta_Be_after_switch
-    return Ke, Be
+    Ke_skin = float(profile.skin_Ke)
+    Be_skin = float(profile.skin_Be)
+    if t < float(profile.env_switch_time):
+        return Ke_skin, Be_skin
+    return (
+        Ke_skin + float(profile.delta_Ke_after_switch),
+        Be_skin + float(profile.delta_Be_after_switch),
+    )
+
+
+def environment_force(xs: float, xs_dot: float, Ke: float, Be: float) -> float:
+    """Return the environment force for the active spring-damper pair."""
+    return float((float(Ke) * float(xs)) + (float(Be) * float(xs_dot)))
+
+
+def gui_environment_force(
+    xs: float,
+    xs_dot: float,
+    profile: Optional[SimuOriginalProfile] = None,
+) -> float:
+    """Return the GUI-exported environment force.
+
+    The Simulink GUI output path is wired through constant `K_e` / `B_e`
+    workspace blocks, so it stays skin-scaled even though the slave dynamics
+    switch to the fat coefficients after `env_switch_time`.
+    """
+    profile = profile or SimuOriginalProfile()
+    return environment_force(xs, xs_dot, profile.skin_Ke, profile.skin_Be)
+
+
+def resolved_environment_force(
+    xs: float,
+    xs_dot: float,
+    t: float,
+    profile: Optional[SimuOriginalProfile] = None,
+    fe_mode: str = FE_MODE_GUI,
+) -> tuple[float, float, float]:
+    """Return ``(Fe, Ke, Be)`` for the requested exported-force mode."""
+    profile = profile or SimuOriginalProfile()
+    Fe_dynamics, Ke, Be = saved_environment_force(xs, xs_dot, t, profile)
+    if str(fe_mode) == FE_MODE_DYNAMICS:
+        return Fe_dynamics, Ke, Be
+    if str(fe_mode) == FE_MODE_GUI:
+        return gui_environment_force(xs, xs_dot, profile), Ke, Be
+    raise ValueError(f"Unknown fe_mode: {fe_mode}")
+
+
+def saved_environment_force(
+    xs: float,
+    xs_dot: float,
+    t: float,
+    profile: Optional[SimuOriginalProfile] = None,
+) -> tuple[float, float, float]:
+    """Return ``(Fe, Ke, Be)`` for the active environment at time ``t``."""
+    Ke, Be = saved_environment(t, profile)
+    return environment_force(xs, xs_dot, Ke, Be), Ke, Be
 
 
 def _valve_reference_pressure(
@@ -236,11 +310,18 @@ def _top_level_observables(
     profile: SimuOriginalProfile,
     F_h_fn: Callable[[float], float],
     u_fn: Callable[[float], float],
+    fe_mode: str = FE_MODE_GUI,
 ) -> dict[str, float]:
     state = SimuOriginalState.from_array(y)
     F_h = F_h_fn(t)
     u = u_fn(t)
-    K_e, B_e = saved_environment(t, profile)
+    Fe, K_e, B_e = resolved_environment_force(
+        state.xs,
+        state.xs_dot,
+        t,
+        profile,
+        fe_mode=fe_mode,
+    )
 
     ref_p1 = _valve_reference_pressure(
         profile.valve_branch_1_pressure_source, state.Pm1, parms
@@ -255,8 +336,6 @@ def _top_level_observables(
     mv2_dot = -valve_constant_2 * state.x_v
     mm1_dot = mv1_dot - state.mL1_dot
     mm2_dot = mv2_dot - state.mL2_dot
-    Fe = K_e * state.xs + B_e * state.xs_dot
-
     return {
         "F_h": F_h,
         "u": u,
@@ -372,6 +451,7 @@ def simulate_simuoriginal_replica(
     initial_state: Optional[SimuOriginalState] = None,
     F_h_fn: Optional[Callable[[float], float]] = None,
     u_fn: Optional[Callable[[float], float]] = None,
+    fe_mode: str = FE_MODE_GUI,
 ) -> SimuOriginalResult:
     parms = parms or ParmsOriginal()
     profile = profile or SimuOriginalProfile(fixed_step=parms.Ts)
@@ -434,7 +514,15 @@ def simulate_simuoriginal_replica(
     mm2_dot = np.zeros(n, dtype=float)
 
     for i, t in enumerate(time):
-        obs = _top_level_observables(float(t), state[i], parms, profile, F_h_fn, u_fn)
+        obs = _top_level_observables(
+            float(t),
+            state[i],
+            parms,
+            profile,
+            F_h_fn,
+            u_fn,
+            fe_mode=fe_mode,
+        )
         F_h[i] = obs["F_h"]
         u[i] = obs["u"]
         K_e[i] = obs["K_e"]

@@ -27,7 +27,7 @@ L_TUBE    = 10.0         # Pneumatic line length [m]
 L_CYL     = 0.275        # Total cylinder stroke [m]
 MP        = 0.25         # Piston mass [kg]
 VMD       = 2.4797e-5    # Dead volume [m^3] (matches MATLAB ParmsOriginal.m)
-BETA      = 0.33 * 35.0  # Viscous friction coeff [Ns/m] (matches SI_NonLinear.m)
+BETA      = 0.33 * 35.0  # Viscous friction coeff [Ns/m] (matches the SimuOriginal study values)
 NU        = 1.57e-5      # Kinematic viscosity [m^2/s]
 MU        = 1.813e-5     # Dynamic viscosity [Ns/m^2]
 R_GAS     = 287.0        # Ideal gas constant (air) [J/(kg*K)]
@@ -36,7 +36,7 @@ RHO0      = 1.204        # Reference air density [kg/m^3]
 # ================================================================== #
 #  ADDITIONAL PARAMETERS                                             #
 # ================================================================== #
-T_AIR     = 273.15 + 20.0  # Air temperature [K] (matches SI_NonLinear.m)
+T_AIR     = 273.15 + 20.0  # Air temperature [K] (matches the SimuOriginal study values)
 T0_REF    = 273.15 + 20.0  # Reference temperature [K]
 P_ATM     = 1.013e5        # Atmospheric pressure [Pa]
 P_SUPPLY  = 3e5            # Supply pressure [Pa]
@@ -245,7 +245,7 @@ MRAC_G1_GAIN  = 1.0
 # ================================================================== #
 PAPER_MASTER_INPUT_MODE = MASTER_INPUT_FORCE
 PAPER_EPISODE_DURATION = 60.0
-PAPER_ENV_SWITCH_TIME  = 30.0
+PAPER_ENV_SWITCH_TIME  = 10.0
 # Paper states a sinusoidal force input of amplitude 10 N is applied
 # to the master actuator.
 PAPER_FORCE_AMP        = 10.0

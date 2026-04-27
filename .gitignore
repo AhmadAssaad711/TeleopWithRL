@@ -19,17 +19,26 @@ results/
 results_fh/
 python_env/results/
 matlab_literal_env/results/
-
-# PyTorch models
+matlab_literal_env/*_experiments/results/
+matlab_literal_env/**/results/
+*.npz
+*.npy
 *.pt
+*.pth
+*.zip
+*.log
 
 # Temp files
 tmpclaude-*
+tmp_*
 *.slxc
 *.asv
+.jupyter_logs/
 
 # MATLAB generated files
 slprj/
+matlab/slprj/
+matlab_env/slprj/
 
 # Jupyter
 .ipynb_checkpoints/

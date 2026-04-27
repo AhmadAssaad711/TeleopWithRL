@@ -66,7 +66,19 @@ def train_q_learning(
 
     env = env_cls(env_mode=env_mode, master_input_mode=master_input_mode, **env_kwargs)
     state_dims = env.get_state_dims_reduced()
-    agent = QLearningAgent(state_dims=state_dims, n_actions=cfg.N_ACTIONS, seed=42)
+    epsilon_decay = QLearningAgent.decay_for_horizon(
+        cfg.EPSILON_START,
+        cfg.EPSILON_END,
+        total_episodes,
+    )
+    agent = QLearningAgent(
+        state_dims=state_dims,
+        n_actions=cfg.N_ACTIONS,
+        seed=42,
+        epsilon_start=cfg.EPSILON_START,
+        epsilon_end=cfg.EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     print(
         f"Q-learning training (reduced 4-D) | episodes={total_episodes} | "
@@ -150,6 +162,9 @@ def train_q_learning(
         f.write(f"state_dims={state_dims}\n")
         f.write(f"discovered_states={agent.discovered_states()}\n")
         f.write(f"action_coverage={agent.coverage():.6f}\n")
+        f.write(f"epsilon_start={cfg.EPSILON_START:.6f}\n")
+        f.write(f"epsilon_end={cfg.EPSILON_END:.6f}\n")
+        f.write(f"epsilon_decay={epsilon_decay:.12f}\n")
         f.write(f"final_epsilon={agent.epsilon:.6f}\n")
         f.write(f"eval_tracking_rmse_m={float(np.sqrt(np.mean(pe_ev ** 2))) if pe_ev.size else float('nan'):.8f}\n")
         f.write(f"eval_transparency_rmse_w={float(np.sqrt(np.mean(te_ev ** 2))) if te_ev.size else float('nan'):.8f}\n")

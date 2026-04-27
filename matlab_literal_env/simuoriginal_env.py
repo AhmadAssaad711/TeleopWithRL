@@ -13,17 +13,35 @@ except ImportError:  # pragma: no cover - direct script execution
     import config as cfg
 
 from .simuoriginal_replica import (
+    FE_MODE_CHOICES,
+    FE_MODE_DYNAMICS,
+    FE_MODE_GUI,
     ParmsOriginal,
     SimuOriginalProfile,
     SimuOriginalState,
     _rk4_step,
     build_saved_simuoriginal_state,
+    environment_force,
+    gui_environment_force,
     saved_environment,
     simuoriginal_derivatives,
 )
 
 
 _TWO_PI = 2.0 * math.pi
+STROKE_LIMIT_MODES = ("terminate", "clamp")
+
+
+def _normalize_action_levels(action_levels: list[float] | tuple[float, ...] | np.ndarray | None) -> np.ndarray:
+    if action_levels is None:
+        levels = np.asarray(cfg.V_LEVELS, dtype=np.float64)
+    else:
+        levels = np.asarray(action_levels, dtype=np.float64).reshape(-1)
+    if levels.size == 0:
+        raise ValueError("action_levels must contain at least one voltage level")
+    if not np.all(np.isfinite(levels)):
+        raise ValueError("action_levels must be finite")
+    return levels.astype(np.float64, copy=True)
 
 
 def _force_waveform_value(phase: float, waveform: str) -> float:
@@ -34,9 +52,51 @@ def _force_waveform_value(phase: float, waveform: str) -> float:
         return math.cos(phase)
     if waveform == "square":
         return 1.0 if math.sin(phase) >= 0.0 else -1.0
+    if waveform == "ramp":
+        phase_mod = float(phase) % _TWO_PI
+        return -1.0 + (2.0 * phase_mod / _TWO_PI)
     if waveform == "multisine":
         return 0.75 * math.sin(phase) + 0.25 * math.sin((2.0 * phase) + 0.35)
     raise ValueError(f"Unknown force waveform: {waveform}")
+
+
+def _build_force_noise_components(
+    noise_seed: int | None,
+    n_components: int = 4,
+) -> tuple[tuple[float, float, float], ...]:
+    if n_components <= 0:
+        return ()
+
+    seed = 0 if noise_seed is None else int(noise_seed)
+    rng = np.random.default_rng(seed)
+    weights = rng.uniform(0.35, 1.0, size=n_components)
+    norm = math.sqrt(max(0.5 * float(np.sum(weights ** 2)), 1e-12))
+    coeffs = weights / norm
+    freq_multipliers = rng.uniform(1.4, 4.5, size=n_components)
+    phases = rng.uniform(0.0, _TWO_PI, size=n_components)
+    return tuple(
+        (float(coeff), float(freq_mul), float(phase))
+        for coeff, freq_mul, phase in zip(coeffs, freq_multipliers, phases)
+    )
+
+
+def _force_noise_signal(
+    t: float,
+    base_freq_hz: float,
+    noise_std: float,
+    noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = (),
+) -> float:
+    if noise_std <= 0.0 or not noise_components:
+        return 0.0
+
+    freq = abs(float(base_freq_hz))
+    if freq <= 1e-9:
+        freq = float(cfg.FORCE_INPUT_FREQ)
+
+    total = 0.0
+    for coeff, freq_mul, phase in noise_components:
+        total += coeff * math.sin((_TWO_PI * freq * freq_mul * t) + phase)
+    return float(noise_std) * total
 
 
 class SimuOriginalReplicaEnv(gym.Env):
@@ -60,6 +120,13 @@ class SimuOriginalReplicaEnv(gym.Env):
         episode_duration: float | None = None,
         env_switch_time: float | None = None,
         terminate_on_error: bool = True,
+        legacy_baseline_env: bool = False,
+        reset_position_mode: str = "midpoint",
+        enforce_stroke_limit: bool = True,
+        stroke_limit_mode: str = "terminate",
+        edge_action_damping_buffer_m: float = 0.0,
+        edge_action_min_scale: float = 1.0,
+        action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None,
         parms: ParmsOriginal | None = None,
         profile: SimuOriginalProfile | None = None,
         reset_options: dict | None = None,
@@ -77,17 +144,34 @@ class SimuOriginalReplicaEnv(gym.Env):
             cfg.EPISODE_DURATION if episode_duration is None else episode_duration
         )
         self.env_switch_time = float(
-            cfg.ENV_SWITCH_TIME if env_switch_time is None else env_switch_time
+            self.profile.env_switch_time if env_switch_time is None else env_switch_time
         )
         self.max_steps = max(1, int(round(self.episode_duration / cfg.RL_DT)))
         self.terminate_on_error = bool(terminate_on_error)
+        self.legacy_baseline_env = bool(legacy_baseline_env)
         self.rl_dt = float(cfg.RL_DT)
         self.internal_dt = float(self.parms.Ts)
         self.sub_steps = max(1, int(round(self.rl_dt / self.internal_dt)))
-        self.x_eq = 0.0
+        self.reset_position_mode = str(reset_position_mode).strip().lower()
+        self.enforce_stroke_limit = bool(enforce_stroke_limit)
+        self.stroke_limit_mode = str(stroke_limit_mode).strip().lower()
+        if self.stroke_limit_mode not in STROKE_LIMIT_MODES:
+            raise ValueError(f"Unknown stroke_limit_mode: {stroke_limit_mode}")
+        if self.legacy_baseline_env:
+            self.reset_position_mode = "zero"
+            self.enforce_stroke_limit = False
+        # Legacy baseline env used origin-centered positions with no explicit
+        # stroke clamp. The newer RL-safe env uses midpoint-centered positions
+        # with a hard geometric stroke check.
+        self.x_eq = 0.0 if self.reset_position_mode in {"zero", "origin", "legacy"} else 0.5 * float(self.parms.l_cyl)
+        self.stroke_min = 0.0
+        self.stroke_max = float(self.parms.l_cyl)
+        self.edge_action_damping_buffer_m = max(0.0, float(edge_action_damping_buffer_m))
+        self.edge_action_min_scale = float(np.clip(edge_action_min_scale, 0.0, 1.0))
         self.default_reset_options = dict(reset_options or {})
 
-        self._action_table = cfg.V_LEVELS.copy()
+        self._action_table = _normalize_action_levels(action_levels)
+        self.action_levels = self._action_table.copy()
         self._u_min = float(self._action_table.min())
         self._u_max = float(self._action_table.max())
         self.action_space = spaces.Box(
@@ -100,19 +184,30 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
 
         self.runtime_profile = self.profile
-        self.replica_state = build_saved_simuoriginal_state(self.parms).as_array()
+        self.replica_state = build_saved_simuoriginal_state(
+            self.parms,
+            init_position_mode=self.reset_position_mode,
+        ).as_array()
         self.state = np.zeros(self.N_STATE, dtype=np.float64)
         self._history: dict[str, list] | None = None
         self.last_u_v = 0.0
         self.current_env_label = "skin"
         self.current_env_id = 0
         self.invalid_state = False
+        self.invalid_reason: str | None = None
         self.singularity_time: float | None = None
+        self.termination_reason: str | None = None
+        self.tracking_error_fail = False
+        self.last_terminated = False
+        self.last_truncated = False
         self.F_h_nominal = 0.0
         self.F_h_noise = 0.0
         self.F_h = 0.0
         self.F_e = 0.0
         self.a_m_signal = 0.0
+        self.fe_mode = FE_MODE_GUI
+        self.requested_u_v = 0.0
+        self.hit_stroke_stop = False
 
     def _sync_force_parameters(self) -> None:
         self.force_amp = abs(float(getattr(self, "force_amp", getattr(self, "fh_amp", cfg.FORCE_INPUT_AMP))))
@@ -128,12 +223,19 @@ class SimuOriginalReplicaEnv(gym.Env):
             self.force_freq_rad = _TWO_PI * self.force_freq
         self.force_phase = float(getattr(self, "force_phase", getattr(self, "fh_phase", cfg.FORCE_INPUT_PHASE)))
         self.force_waveform = str(getattr(self, "force_waveform", getattr(self, "fh_waveform", "sine"))).strip().lower()
+        self.force_noise_std = abs(float(getattr(self, "force_noise_std", getattr(self, "fh_noise_std", 0.0))))
+        self.force_noise_seed = int(getattr(self, "force_noise_seed", getattr(self, "fh_noise_seed", 0)))
+        self.force_noise_components = (
+            _build_force_noise_components(self.force_noise_seed) if self.force_noise_std > 0.0 else ()
+        )
         self.fh_amp = self.force_amp
         self.fh_bias = self.force_bias
         self.fh_freq = self.force_freq
         self.fh_freq_rad = self.force_freq_rad
         self.fh_phase = self.force_phase
         self.fh_waveform = self.force_waveform
+        self.fh_noise_std = self.force_noise_std
+        self.fh_noise_seed = self.force_noise_seed
 
     def _update_runtime_profile(self) -> None:
         if self.env_mode == cfg.ENV_MODE_CONSTANT:
@@ -155,7 +257,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         raise ValueError(f"Unknown env_mode: {self.env_mode}")
 
     def _update_environment_mode(self) -> None:
-        Be, Ke = saved_environment(self.t, self.runtime_profile)
+        Ke, Be = saved_environment(self.t, self.runtime_profile)
         if abs(Ke - self.profile.skin_Ke) < 1e-12 and abs(Be - self.profile.skin_Be) < 1e-12:
             self.current_env_label = "skin"
             self.current_env_id = 0
@@ -165,9 +267,20 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.Be = float(Be)
         self.Ke = float(Ke)
 
-    def _force_input(self, t: float) -> float:
+    def _force_components(self, t: float) -> tuple[float, float, float]:
         phase = (self.force_freq_rad * t) + self.force_phase
-        return self.force_bias + (self.force_amp * _force_waveform_value(phase, self.force_waveform))
+        nominal = self.force_bias + (self.force_amp * _force_waveform_value(phase, self.force_waveform))
+        noise = _force_noise_signal(
+            t,
+            self.force_freq,
+            self.force_noise_std,
+            self.force_noise_components,
+        )
+        return nominal, noise, nominal + noise
+
+    def _force_input(self, t: float) -> float:
+        _, _, total = self._force_components(t)
+        return total
 
     def _control_input(self, _t: float) -> float:
         return float(self.last_u_v)
@@ -201,6 +314,46 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
         return min(volumes) > 0.0 and bool(np.all(np.isfinite(replica_state)))
 
+    def _stroke_is_valid(self, replica_state: np.ndarray) -> bool:
+        if not self.enforce_stroke_limit:
+            return True
+        s = SimuOriginalState.from_array(replica_state)
+        return bool(
+            self.stroke_min <= s.xm <= self.stroke_max
+            and self.stroke_min <= s.xs <= self.stroke_max
+            and np.all(np.isfinite((s.xm, s.xs)))
+        )
+
+    def _apply_stroke_clamp(self, replica_state: np.ndarray) -> tuple[np.ndarray, bool]:
+        clamped = np.asarray(replica_state, dtype=np.float64).copy()
+        if not np.all(np.isfinite(clamped)):
+            return clamped, False
+
+        hit = False
+        if clamped[3] < self.stroke_min:
+            clamped[3] = self.stroke_min
+            if clamped[2] < 0.0:
+                clamped[2] = 0.0
+            hit = True
+        elif clamped[3] > self.stroke_max:
+            clamped[3] = self.stroke_max
+            if clamped[2] > 0.0:
+                clamped[2] = 0.0
+            hit = True
+
+        if clamped[7] < self.stroke_min:
+            clamped[7] = self.stroke_min
+            if clamped[6] < 0.0:
+                clamped[6] = 0.0
+            hit = True
+        elif clamped[7] > self.stroke_max:
+            clamped[7] = self.stroke_max
+            if clamped[6] > 0.0:
+                clamped[6] = 0.0
+            hit = True
+
+        return clamped, hit
+
     def _derivative_fn(self, t: float, y: np.ndarray) -> np.ndarray:
         return simuoriginal_derivatives(
             t,
@@ -214,12 +367,38 @@ class SimuOriginalReplicaEnv(gym.Env):
     def _update_signals(self) -> None:
         self._update_environment_mode()
         self.state = self._to_env_state(self.replica_state)
-        self.F_h_nominal = self._force_input(self.t)
-        self.F_h_noise = 0.0
-        self.F_h = float(self.F_h_nominal)
-        self.F_e = float((self.Ke * self.state[self.IX_XS]) + (self.Be * self.state[self.IX_VS]))
+        self.F_h_nominal, self.F_h_noise, self.F_h = self._force_components(self.t)
+        self.F_h = float(self.F_h)
+        if self.fe_mode == FE_MODE_DYNAMICS:
+            self.F_e = environment_force(
+                self.state[self.IX_XS],
+                self.state[self.IX_VS],
+                self.Ke,
+                self.Be,
+            )
+        else:
+            # Alternate reference path:
+            # self.F_e = environment_force(self.state[self.IX_XS], self.state[self.IX_VS], self.Ke, self.Be)
+            self.F_e = gui_environment_force(
+                self.state[self.IX_XS],
+                self.state[self.IX_VS],
+                self.runtime_profile,
+            )
         deriv = self._derivative_fn(self.t, self.replica_state)
         self.a_m_signal = float(deriv[2]) if np.all(np.isfinite(deriv)) else 0.0
+
+    def _edge_action_scale(self) -> float:
+        buffer_m = float(self.edge_action_damping_buffer_m)
+        if buffer_m <= 0.0:
+            return 1.0
+        s = SimuOriginalState.from_array(self.replica_state)
+        dist_m = min(float(s.xm), self.stroke_max - float(s.xm))
+        dist_s = min(float(s.xs), self.stroke_max - float(s.xs))
+        dist_to_edge = min(dist_m, dist_s)
+        if dist_to_edge >= buffer_m:
+            return 1.0
+        severity = 1.0 - float(np.clip(dist_to_edge / buffer_m, 0.0, 1.0))
+        return float(self.edge_action_min_scale + ((1.0 - self.edge_action_min_scale) * (1.0 - severity)))
 
     def get_equilibrium_position(self) -> float:
         return self.x_eq
@@ -236,19 +415,33 @@ class SimuOriginalReplicaEnv(gym.Env):
         merged_options.update(options or {})
         options = merged_options
 
-        self.replica_state = build_saved_simuoriginal_state(self.parms).as_array()
+        self.replica_state = build_saved_simuoriginal_state(
+            self.parms,
+            init_position_mode=self.reset_position_mode,
+        ).as_array()
         self.state = self._to_env_state(self.replica_state)
         self.t = 0.0
         self.step_count = 0
         self.invalid_state = False
+        self.invalid_reason = None
         self.singularity_time = None
+        self.termination_reason = None
+        self.tracking_error_fail = False
+        self.last_terminated = False
+        self.last_truncated = False
         self.last_u_v = 0.0
+        self.requested_u_v = 0.0
+        self.hit_stroke_stop = False
 
         self.force_amp = float(cfg.FORCE_INPUT_AMP)
         self.force_bias = 0.0
         self.force_freq = float(cfg.FORCE_INPUT_FREQ)
         self.force_phase = float(cfg.FORCE_INPUT_PHASE)
         self.force_waveform = "sine"
+        self.force_noise_std = 0.0
+        self.force_noise_seed = 0
+        self.force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = ()
+        self.fe_mode = FE_MODE_GUI
         for key in (
             "force_amp",
             "force_bias",
@@ -256,15 +449,39 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_freq_rad",
             "force_phase",
             "force_waveform",
+            "force_noise_std",
+            "force_noise_seed",
+            "fe_mode",
+            "legacy_baseline_env",
+            "reset_position_mode",
+            "enforce_stroke_limit",
+            "stroke_limit_mode",
+            "edge_action_damping_buffer_m",
+            "edge_action_min_scale",
             "fh_amp",
             "fh_bias",
             "fh_freq",
             "fh_freq_rad",
             "fh_phase",
             "fh_waveform",
+            "fh_noise_std",
+            "fh_noise_seed",
         ):
             if key in options:
                 setattr(self, key, options[key])
+        self.legacy_baseline_env = bool(getattr(self, "legacy_baseline_env", False))
+        self.reset_position_mode = str(getattr(self, "reset_position_mode", self.reset_position_mode)).strip().lower()
+        self.enforce_stroke_limit = bool(getattr(self, "enforce_stroke_limit", self.enforce_stroke_limit))
+        self.stroke_limit_mode = str(getattr(self, "stroke_limit_mode", self.stroke_limit_mode)).strip().lower()
+        if self.stroke_limit_mode not in STROKE_LIMIT_MODES:
+            raise ValueError(f"Unknown stroke_limit_mode: {self.stroke_limit_mode}")
+        if self.legacy_baseline_env:
+            self.reset_position_mode = "zero"
+            self.enforce_stroke_limit = False
+        self.x_eq = 0.0 if self.reset_position_mode in {"zero", "origin", "legacy"} else 0.5 * float(self.parms.l_cyl)
+        self.fe_mode = str(self.fe_mode).strip().lower()
+        if self.fe_mode not in FE_MODE_CHOICES:
+            raise ValueError(f"Unknown fe_mode: {self.fe_mode}")
         self._sync_force_parameters()
         self._update_runtime_profile()
         self._update_signals()
@@ -287,6 +504,7 @@ class SimuOriginalReplicaEnv(gym.Env):
             "a_m_signal": [],
             "F_e": [],
             "u_v": [],
+            "requested_u_v": [],
             "x_v": [],
             "env_id": [],
             "env_label": [],
@@ -297,6 +515,12 @@ class SimuOriginalReplicaEnv(gym.Env):
             "reward_transparency": [],
             "reward": [],
             "invalid_state": [],
+            "invalid_reason": [],
+            "hit_stroke_stop": [],
+            "terminated": [],
+            "truncated": [],
+            "tracking_error_fail": [],
+            "termination_reason": [],
         }
 
         return self._get_obs(), self._get_info()
@@ -324,6 +548,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["a_m_signal"].append(self.a_m_signal)
         self._history["F_e"].append(self.F_e)
         self._history["u_v"].append(self.last_u_v)
+        self._history["requested_u_v"].append(self.requested_u_v)
         self._history["x_v"].append(self.state[self.IX_XV])
         self._history["env_id"].append(self.current_env_id)
         self._history["env_label"].append(self.current_env_label)
@@ -334,21 +559,48 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["reward_transparency"].append(transparency_term)
         self._history["reward"].append(reward)
         self._history["invalid_state"].append(self.invalid_state)
+        self._history["invalid_reason"].append(self.invalid_reason)
+        self._history["hit_stroke_stop"].append(self.hit_stroke_stop)
+        self._history["terminated"].append(self.last_terminated)
+        self._history["truncated"].append(self.last_truncated)
+        self._history["tracking_error_fail"].append(self.tracking_error_fail)
+        self._history["termination_reason"].append(self.termination_reason)
 
     def _step_with_voltage(self, u_v: float):
-        self.last_u_v = u_v
+        self.requested_u_v = float(u_v)
+        self.last_u_v = float(u_v) * self._edge_action_scale()
         self._sync_force_parameters()
         self._update_runtime_profile()
+        self.hit_stroke_stop = False
+        clamp_stroke = bool(self.enforce_stroke_limit and self.stroke_limit_mode == "clamp")
 
         for _ in range(self.sub_steps):
+            if clamp_stroke:
+                self.replica_state, hit_stop = self._apply_stroke_clamp(self.replica_state)
+                self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
             if not self._volumes_are_valid(self.replica_state):
                 self.invalid_state = True
+                self.invalid_reason = "volume_singularity"
+                self.singularity_time = float(self.t)
+                break
+            if not clamp_stroke and not self._stroke_is_valid(self.replica_state):
+                self.invalid_state = True
+                self.invalid_reason = "stroke_limit"
                 self.singularity_time = float(self.t)
                 break
             next_state = _rk4_step(self._derivative_fn, self.t, self.replica_state, self.internal_dt)
             self.t += self.internal_dt
+            if clamp_stroke:
+                next_state, hit_stop = self._apply_stroke_clamp(next_state)
+                self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
             if not self._volumes_are_valid(next_state):
                 self.invalid_state = True
+                self.invalid_reason = "volume_singularity"
+                self.singularity_time = float(self.t)
+                break
+            if not clamp_stroke and not self._stroke_is_valid(next_state):
+                self.invalid_state = True
+                self.invalid_reason = "stroke_limit"
                 self.singularity_time = float(self.t)
                 break
             self.replica_state = next_state
@@ -367,12 +619,22 @@ class SimuOriginalReplicaEnv(gym.Env):
         transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error ** 2
         reward = -(track_term + effort_term + transparency_term)
 
-        self._log_step(reward, track_term, effort_term, transparency_term)
-
         terminated = bool(self.invalid_state)
+        self.tracking_error_fail = False
+        self.termination_reason = self.invalid_reason if self.invalid_state else None
         if self.terminate_on_error and abs(pos_error) >= cfg.POS_ERROR_FAIL_THRESHOLD:
             terminated = True
+            self.tracking_error_fail = True
+            if self.termination_reason is None:
+                self.termination_reason = "tracking_error_fail"
         truncated = self.step_count >= self.max_steps
+        if truncated and self.termination_reason is None:
+            self.termination_reason = "max_steps"
+        self.last_terminated = terminated
+        self.last_truncated = truncated
+
+        self._log_step(reward, track_term, effort_term, transparency_term)
+
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
     def _action_to_voltage(self, action: int | float | np.ndarray) -> float:
@@ -419,6 +681,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         return {
             "time": self.t,
             "u_v": self.last_u_v,
+            "requested_u_v": self.requested_u_v,
             "F_h": self.F_h,
             "F_h_nominal": self.F_h_nominal,
             "F_h_noise": self.F_h_noise,
@@ -431,6 +694,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "x_eq": self.x_eq,
             "x_m_centered": x_m_centered,
             "x_s_centered": x_s_centered,
+            "pos_error": float(self.state[self.IX_XM] - self.state[self.IX_XS]),
+            "transparency_error": float((self.F_e * self.state[self.IX_VM]) - (self.F_h * self.state[self.IX_VS])),
             "step_count": self.step_count,
             "max_steps": self.max_steps,
             "episode_duration": self.episode_duration,
@@ -441,8 +706,22 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_freq": self.force_freq,
             "force_freq_rad": self.force_freq_rad,
             "force_waveform": self.force_waveform,
+            "fe_mode": self.fe_mode,
+            "legacy_baseline_env": self.legacy_baseline_env,
+            "reset_position_mode": self.reset_position_mode,
+            "enforce_stroke_limit": self.enforce_stroke_limit,
+            "stroke_limit_mode": self.stroke_limit_mode,
+            "hit_stroke_stop": self.hit_stroke_stop,
+            "edge_action_damping_buffer_m": self.edge_action_damping_buffer_m,
+            "edge_action_min_scale": self.edge_action_min_scale,
             "invalid_state": self.invalid_state,
+            "invalid_reason": self.invalid_reason,
             "singularity_time": self.singularity_time,
+            "tracking_error_fail": self.tracking_error_fail,
+            "terminated": self.last_terminated,
+            "truncated": self.last_truncated,
+            "termination_reason": self.termination_reason,
+            "pos_error_fail_threshold": float(cfg.POS_ERROR_FAIL_THRESHOLD),
         }
 
     def discretise_obs(self, obs: np.ndarray) -> tuple[int, ...]:

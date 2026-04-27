@@ -797,7 +797,19 @@ def _train_qlearning_study(
     env_factory = lambda: TeleopEnv(env_mode=env_mode, master_input_mode=master_input_mode)
     train_env = env_factory()
     state_dims = train_env.get_state_dims_reduced()
-    agent = QLearningAgent(state_dims=state_dims, n_actions=cfg.N_ACTIONS, seed=seed)
+    epsilon_decay = QLearningAgent.decay_for_horizon(
+        cfg.EPSILON_START,
+        cfg.EPSILON_END,
+        total_episodes,
+    )
+    agent = QLearningAgent(
+        state_dims=state_dims,
+        n_actions=cfg.N_ACTIONS,
+        seed=seed,
+        epsilon_start=cfg.EPSILON_START,
+        epsilon_end=cfg.EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     ep_returns = np.zeros(total_episodes, dtype=np.float64)
     ep_track = np.zeros(total_episodes, dtype=np.float64)
@@ -902,6 +914,10 @@ def _train_qlearning_study(
             "master_input_mode": master_input_mode,
             "total_episodes": total_episodes,
             "test_episodes": test_episodes,
+            "epsilon_start": float(cfg.EPSILON_START),
+            "epsilon_end": float(cfg.EPSILON_END),
+            "epsilon_decay": float(epsilon_decay),
+            "final_epsilon": float(agent.epsilon),
             "state_dims": state_dims,
         },
     )
@@ -927,7 +943,19 @@ def _train_dqn_variant(
         variant,
     )
     train_env = env_factory()
-    agent = DQNAgent(obs_dim=10, n_actions=cfg.N_ACTIONS, seed=seed)
+    epsilon_decay = DQNAgent.decay_for_horizon(
+        cfg.DQN_EPSILON_START,
+        cfg.DQN_EPSILON_END,
+        total_episodes,
+    )
+    agent = DQNAgent(
+        obs_dim=10,
+        n_actions=cfg.N_ACTIONS,
+        seed=seed,
+        epsilon_start=cfg.DQN_EPSILON_START,
+        epsilon_end=cfg.DQN_EPSILON_END,
+        epsilon_decay=epsilon_decay,
+    )
 
     ep_returns = np.zeros(total_episodes, dtype=np.float64)
     ep_track = np.zeros(total_episodes, dtype=np.float64)
@@ -1044,6 +1072,10 @@ def _train_dqn_variant(
             "total_episodes": total_episodes,
             "test_episodes": test_episodes,
             "reward_variant": asdict(variant),
+            "epsilon_start": float(cfg.DQN_EPSILON_START),
+            "epsilon_end": float(cfg.DQN_EPSILON_END),
+            "epsilon_decay": float(epsilon_decay),
+            "final_epsilon": float(agent.epsilon),
         },
     )
     return result
