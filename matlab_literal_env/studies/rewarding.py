@@ -151,12 +151,15 @@ def reward_variant_from_spec(spec: Mapping[str, Any]) -> RewardVariant:
     weights = spec.get("weights", {})
     scales = spec.get("scales", {})
     penalties = spec.get("penalties", {})
+    scale_catalog = spec.get("scale_catalog", {})
     if not isinstance(weights, Mapping):
         raise TypeError("reward spec 'weights' must be an object when provided.")
     if not isinstance(scales, Mapping):
         raise TypeError("reward spec 'scales' must be an object when provided.")
     if not isinstance(penalties, Mapping):
         raise TypeError("reward spec 'penalties' must be an object when provided.")
+    if not isinstance(scale_catalog, Mapping):
+        raise TypeError("reward spec 'scale_catalog' must be an object when provided.")
 
     tracking_weight = float(
         _lookup(weights, "tracking", "tracking_weight", default=_lookup(spec, "tracking_weight", default=base.tracking_weight))
@@ -289,7 +292,7 @@ def reward_variant_from_spec(spec: Mapping[str, Any]) -> RewardVariant:
         ),
         "low_force_edge_penalty_weight": low_force_edge_penalty_weight,
         "formula_terms": tuple(
-            _normalize_formula_term(term, index)
+            _normalize_formula_term(_resolve_formula_term_scale(term, scale_catalog), index)
             for index, term in enumerate(spec.get("terms", spec.get("formula_terms", ())), start=1)
         ),
     }
@@ -349,6 +352,7 @@ def _normalize_formula_term(term: Mapping[str, Any], index: int) -> dict[str, An
         "source": str(term["source"]).strip(),
         "shape": str(term.get("shape", "square")).strip().lower(),
         "sign": sign,
+        "scale_name": str(term.get("scale_name", "")).strip(),
         "weight": float(term.get("weight", 1.0)),
         "scale": float(term.get("scale", 1.0)),
         "target": float(term.get("target", 0.0)),
@@ -357,6 +361,35 @@ def _normalize_formula_term(term: Mapping[str, Any], index: int) -> dict[str, An
         "margin": float(term.get("margin", term.get("scale", 1.0))),
         "clip": None if term.get("clip") is None else float(term.get("clip")),
     }
+
+
+def _scale_catalog_value(scale_catalog: Mapping[str, Any], scale_name: str) -> float:
+    if scale_name not in scale_catalog:
+        known = ", ".join(sorted(str(key) for key in scale_catalog.keys()))
+        raise KeyError(f"Unknown reward scale_name '{scale_name}'. Known scales: {known}")
+    entry = scale_catalog[scale_name]
+    if isinstance(entry, Mapping):
+        if "value" not in entry:
+            raise KeyError(f"Reward scale '{scale_name}' must contain a 'value' field.")
+        entry = entry["value"]
+    return float(entry)
+
+
+def _resolve_formula_term_scale(term: Mapping[str, Any], scale_catalog: Mapping[str, Any]) -> dict[str, Any]:
+    resolved = dict(term)
+    scale_name = str(resolved.get("scale_name", "")).strip()
+    if scale_name and "scale" not in resolved:
+        resolved["scale"] = _scale_catalog_value(scale_catalog, scale_name)
+    margin_name = str(resolved.get("margin_name", "")).strip()
+    if margin_name and "margin" not in resolved:
+        resolved["margin"] = _scale_catalog_value(scale_catalog, margin_name)
+    deadband_name = str(resolved.get("deadband_name", "")).strip()
+    if deadband_name and "deadband" not in resolved:
+        resolved["deadband"] = _scale_catalog_value(scale_catalog, deadband_name)
+    threshold_name = str(resolved.get("threshold_name", "")).strip()
+    if threshold_name and "threshold" not in resolved:
+        resolved["threshold"] = _scale_catalog_value(scale_catalog, threshold_name)
+    return resolved
 
 
 def _shape_value(raw_value: float, term: Mapping[str, Any]) -> float:
