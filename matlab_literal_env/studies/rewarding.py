@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any
+import json
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -39,6 +41,7 @@ class RewardVariant:
     edge_penalty_weight: float = 0.0
     low_force_threshold_n: float = 0.0
     low_force_edge_penalty_weight: float = 0.0
+    formula_terms: tuple[dict[str, Any], ...] = ()
 
 
 def baseline_reward_variant() -> RewardVariant:
@@ -134,7 +137,181 @@ def build_core_reward_variants() -> list[RewardVariant]:
     return [variant for variant in build_full_reward_variants() if variant.name in wanted]
 
 
+def _lookup(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return default
+
+
+def reward_variant_from_spec(spec: Mapping[str, Any]) -> RewardVariant:
+    """Build a reward variant from a notebook-friendly JSON-style spec."""
+
+    base = baseline_reward_variant()
+    weights = spec.get("weights", {})
+    scales = spec.get("scales", {})
+    penalties = spec.get("penalties", {})
+    if not isinstance(weights, Mapping):
+        raise TypeError("reward spec 'weights' must be an object when provided.")
+    if not isinstance(scales, Mapping):
+        raise TypeError("reward spec 'scales' must be an object when provided.")
+    if not isinstance(penalties, Mapping):
+        raise TypeError("reward spec 'penalties' must be an object when provided.")
+
+    tracking_weight = float(
+        _lookup(weights, "tracking", "tracking_weight", default=_lookup(spec, "tracking_weight", default=base.tracking_weight))
+    )
+    transparency_weight = float(
+        _lookup(
+            weights,
+            "transparency",
+            "transparency_weight",
+            default=_lookup(spec, "transparency_weight", default=base.transparency_weight),
+        )
+    )
+    velocity_weight = float(
+        _lookup(weights, "velocity", "velocity_weight", default=_lookup(spec, "velocity_weight", default=base.velocity_weight))
+    )
+    force_diff_weight = float(
+        _lookup(
+            weights,
+            "force_difference",
+            "force_diff",
+            "force_diff_weight",
+            default=_lookup(spec, "force_diff_weight", default=base.force_diff_weight),
+        )
+    )
+    effort_weight = float(
+        _lookup(weights, "effort", "effort_weight", default=_lookup(spec, "effort_weight", default=base.effort_weight))
+    )
+    jerk_weight = float(
+        _lookup(weights, "jerk", "jerk_weight", default=_lookup(spec, "jerk_weight", default=base.jerk_weight))
+    )
+    edge_penalty_weight = float(
+        _lookup(
+            weights,
+            "edge",
+            "edge_penalty",
+            "edge_penalty_weight",
+            default=_lookup(
+                penalties,
+                "edge_penalty_weight",
+                "edge",
+                default=_lookup(spec, "edge_penalty_weight", default=base.edge_penalty_weight),
+            ),
+        )
+    )
+    low_force_edge_penalty_weight = float(
+        _lookup(
+            weights,
+            "low_force_edge",
+            "low_force_edge_penalty",
+            "low_force_edge_penalty_weight",
+            default=_lookup(
+                penalties,
+                "low_force_edge_penalty_weight",
+                "low_force_edge",
+                default=_lookup(spec, "low_force_edge_penalty_weight", default=base.low_force_edge_penalty_weight),
+            ),
+        )
+    )
+
+    payload = {
+        "name": str(spec.get("name") or "custom_reward"),
+        "tracking_weight": tracking_weight,
+        "transparency_weight": transparency_weight,
+        "jerk_weight": jerk_weight,
+        "use_jerk": bool(spec.get("use_jerk", abs(jerk_weight) > 0.0)),
+        "tracking_scale_m": float(
+            _lookup(scales, "tracking_m", "tracking", "tracking_scale_m", default=_lookup(spec, "tracking_scale_m", default=base.tracking_scale_m))
+        ),
+        "transparency_scale_w": float(
+            _lookup(
+                scales,
+                "transparency_w",
+                "transparency",
+                "transparency_scale_w",
+                default=_lookup(spec, "transparency_scale_w", default=base.transparency_scale_w),
+            )
+        ),
+        "velocity_weight": velocity_weight,
+        "velocity_scale_mps": float(
+            _lookup(
+                scales,
+                "velocity_mps",
+                "velocity",
+                "velocity_scale_mps",
+                default=_lookup(spec, "velocity_scale_mps", default=base.velocity_scale_mps),
+            )
+        ),
+        "force_diff_weight": force_diff_weight,
+        "force_diff_scale_n": float(
+            _lookup(
+                scales,
+                "force_difference_n",
+                "force_diff_n",
+                "force_diff",
+                "force_diff_scale_n",
+                default=_lookup(spec, "force_diff_scale_n", default=base.force_diff_scale_n),
+            )
+        ),
+        "effort_weight": effort_weight,
+        "effort_scale_v": float(
+            _lookup(scales, "effort_v", "effort", "effort_scale_v", default=_lookup(spec, "effort_scale_v", default=base.effort_scale_v))
+        ),
+        "jerk_scale_v": float(
+            _lookup(scales, "jerk_v", "jerk", "jerk_scale_v", default=_lookup(spec, "jerk_scale_v", default=base.jerk_scale_v))
+        ),
+        "stroke_limit_penalty": float(
+            _lookup(penalties, "stroke_limit", "stroke_limit_penalty", default=_lookup(spec, "stroke_limit_penalty", default=base.stroke_limit_penalty))
+        ),
+        "invalid_state_penalty": float(
+            _lookup(penalties, "invalid_state", "invalid_state_penalty", default=_lookup(spec, "invalid_state_penalty", default=base.invalid_state_penalty))
+        ),
+        "tracking_error_fail_penalty": float(
+            _lookup(
+                penalties,
+                "tracking_error_fail",
+                "tracking_error_fail_penalty",
+                default=_lookup(spec, "tracking_error_fail_penalty", default=base.tracking_error_fail_penalty),
+            )
+        ),
+        "edge_buffer_m": float(
+            _lookup(penalties, "edge_buffer_m", default=_lookup(spec, "edge_buffer_m", default=base.edge_buffer_m))
+        ),
+        "edge_penalty_weight": edge_penalty_weight,
+        "low_force_threshold_n": float(
+            _lookup(
+                penalties,
+                "low_force_threshold_n",
+                default=_lookup(spec, "low_force_threshold_n", default=base.low_force_threshold_n),
+            )
+        ),
+        "low_force_edge_penalty_weight": low_force_edge_penalty_weight,
+        "formula_terms": tuple(
+            _normalize_formula_term(term, index)
+            for index, term in enumerate(spec.get("terms", spec.get("formula_terms", ())), start=1)
+        ),
+    }
+
+    valid_fields = {field.name for field in fields(RewardVariant)}
+    extras = {key: value for key, value in spec.items() if key in valid_fields and key not in payload}
+    payload.update(extras)
+    return RewardVariant(**payload)
+
+
+def load_reward_variant_from_json(path: str | Path) -> RewardVariant:
+    with open(Path(path), "r", encoding="utf-8") as fh:
+        spec = json.load(fh)
+    if not isinstance(spec, Mapping):
+        raise TypeError("Reward spec JSON must contain an object.")
+    return reward_variant_from_spec(spec)
+
+
 def reward_variant_from_name(name: str) -> RewardVariant:
+    candidate = Path(str(name))
+    if candidate.suffix.lower() == ".json" and candidate.exists():
+        return load_reward_variant_from_json(candidate)
     variants = {variant.name: variant for variant in build_full_reward_variants()}
     if name == "baseline_cfg":
         return baseline_reward_variant()
@@ -148,6 +325,140 @@ def _normalized_square(value: float, scale: float) -> float:
     return (float(value) / safe_scale) ** 2
 
 
+def _safe_name(value: Any) -> str:
+    raw = str(value).strip() or "term"
+    chars = [ch if ch.isalnum() else "_" for ch in raw]
+    name = "".join(chars).strip("_").lower()
+    return name or "term"
+
+
+def _normalize_formula_term(term: Mapping[str, Any], index: int) -> dict[str, Any]:
+    if "source" not in term:
+        raise KeyError(f"Reward term {index} is missing required key 'source'.")
+    name = _safe_name(term.get("name") or f"term_{index}")
+    sign = str(term.get("sign", "penalty")).strip().lower()
+    if sign in {"-", "cost", "loss"}:
+        sign = "penalty"
+    if sign in {"+", "reward"}:
+        sign = "bonus"
+    if sign not in {"penalty", "bonus"}:
+        raise ValueError(f"Reward term '{name}' has unknown sign '{sign}'. Use 'penalty' or 'bonus'.")
+
+    return {
+        "name": name,
+        "source": str(term["source"]).strip(),
+        "shape": str(term.get("shape", "square")).strip().lower(),
+        "sign": sign,
+        "weight": float(term.get("weight", 1.0)),
+        "scale": float(term.get("scale", 1.0)),
+        "target": float(term.get("target", 0.0)),
+        "deadband": float(term.get("deadband", 0.0)),
+        "threshold": float(term.get("threshold", 0.0)),
+        "margin": float(term.get("margin", term.get("scale", 1.0))),
+        "clip": None if term.get("clip") is None else float(term.get("clip")),
+    }
+
+
+def _shape_value(raw_value: float, term: Mapping[str, Any]) -> float:
+    shape = str(term.get("shape", "square")).strip().lower()
+    centered = float(raw_value) - float(term.get("target", 0.0))
+    scale = max(abs(float(term.get("scale", 1.0))), 1e-9)
+    normalized = centered / scale
+    clip = term.get("clip")
+    if clip is not None:
+        limit = abs(float(clip))
+        normalized = float(np.clip(normalized, -limit, limit))
+
+    if shape in {"square", "squared", "l2"}:
+        return float(normalized ** 2)
+    if shape in {"absolute", "abs", "l1"}:
+        return float(abs(normalized))
+    if shape in {"linear", "signed"}:
+        return float(normalized)
+    if shape in {"deadband_square", "deadband_squared"}:
+        excess = max(abs(centered) - max(float(term.get("deadband", 0.0)), 0.0), 0.0)
+        return float((excess / scale) ** 2)
+    if shape in {"deadband_abs", "deadband_absolute"}:
+        excess = max(abs(centered) - max(float(term.get("deadband", 0.0)), 0.0), 0.0)
+        return float(excess / scale)
+    if shape in {"above_threshold_square", "hinge_square"}:
+        excess = max(float(raw_value) - float(term.get("threshold", 0.0)), 0.0)
+        return float((excess / scale) ** 2)
+    if shape in {"above_threshold_abs", "hinge_abs"}:
+        excess = max(float(raw_value) - float(term.get("threshold", 0.0)), 0.0)
+        return float(excess / scale)
+    if shape in {"below_threshold_square"}:
+        excess = max(float(term.get("threshold", 0.0)) - float(raw_value), 0.0)
+        return float((excess / scale) ** 2)
+    if shape in {"below_threshold_abs"}:
+        excess = max(float(term.get("threshold", 0.0)) - float(raw_value), 0.0)
+        return float(excess / scale)
+    if shape in {"tolerance_bonus", "triangle_bonus"}:
+        margin = max(abs(float(term.get("margin", scale))), 1e-9)
+        return float(max(0.0, 1.0 - (abs(centered) / margin)))
+    if shape in {"gaussian_bonus", "rbf_bonus"}:
+        return float(np.exp(-0.5 * (centered / scale) ** 2))
+    raise ValueError(f"Unknown reward term shape: {shape}")
+
+
+def _term_group(term: Mapping[str, Any]) -> str:
+    source = str(term.get("source", ""))
+    name = str(term.get("name", ""))
+    text = f"{source} {name}".lower()
+    if "pos_error" in text or "tracking" in text:
+        return "track"
+    if "velocity" in text:
+        return "velocity"
+    if "transparency" in text:
+        return "transparency"
+    if "force_diff" in text or "force_difference" in text:
+        return "force_diff"
+    if source in {"u_v", "requested_u_v"} or "effort" in text:
+        return "effort"
+    if "action_delta" in text or "jerk" in text:
+        return "jerk"
+    if "edge" in text:
+        return "edge"
+    return "other"
+
+
+def reward_formula_from_context(
+    context: Mapping[str, float],
+    variant: RewardVariant,
+) -> tuple[float, dict[str, float], dict[str, float]]:
+    grouped = {
+        "track": 0.0,
+        "velocity": 0.0,
+        "transparency": 0.0,
+        "force_diff": 0.0,
+        "effort": 0.0,
+        "jerk": 0.0,
+        "edge": 0.0,
+        "low_force_edge": 0.0,
+        "terminal_penalty": 0.0,
+    }
+    custom_terms: dict[str, float] = {}
+    reward = 0.0
+
+    for index, raw_term in enumerate(variant.formula_terms, start=1):
+        term = _normalize_formula_term(raw_term, index)
+        source = str(term["source"])
+        if source not in context:
+            known = ", ".join(sorted(context.keys()))
+            raise KeyError(f"Reward term '{term['name']}' uses unknown source '{source}'. Known sources: {known}")
+        shaped = _shape_value(float(context[source]), term)
+        magnitude = float(term["weight"]) * shaped
+        signed = magnitude if term["sign"] == "bonus" else -magnitude
+        reward += signed
+        custom_terms[str(term["name"])] = float(signed)
+
+        group = _term_group(term)
+        if group in grouped:
+            grouped[group] += magnitude if term["sign"] == "penalty" else -magnitude
+
+    return float(reward), grouped, custom_terms
+
+
 def compute_reward_terms(
     *,
     pos_error: float,
@@ -158,6 +469,33 @@ def compute_reward_terms(
     action_delta: float,
     variant: RewardVariant,
 ) -> tuple[float, float, float, float, float, float, float]:
+    if variant.formula_terms:
+        context = {
+            "pos_error": float(pos_error),
+            "tracking_error": float(pos_error),
+            "abs_pos_error": abs(float(pos_error)),
+            "velocity_error": float(velocity_error),
+            "abs_velocity_error": abs(float(velocity_error)),
+            "transparency_error": float(transparency_error),
+            "abs_transparency_error": abs(float(transparency_error)),
+            "force_diff": float(force_diff),
+            "abs_force_diff": abs(float(force_diff)),
+            "u_v": float(u_v),
+            "abs_u_v": abs(float(u_v)),
+            "action_delta": float(action_delta),
+            "abs_action_delta": abs(float(action_delta)),
+        }
+        reward, grouped, _ = reward_formula_from_context(context, variant)
+        return (
+            reward,
+            float(grouped["track"]),
+            float(grouped["transparency"]),
+            float(grouped["effort"]),
+            float(grouped["jerk"]),
+            float(grouped["velocity"]),
+            float(grouped["force_diff"]),
+        )
+
     track_term = float(variant.tracking_weight) * _normalized_square(pos_error, variant.tracking_scale_m)
     velocity_term = float(variant.velocity_weight) * _normalized_square(
         velocity_error,
@@ -203,6 +541,12 @@ class ReplicaRewardEnv:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.base_env, name)
 
+    def _custom_term_keys(self) -> list[str]:
+        return [
+            f"reward_term_{_normalize_formula_term(term, index)['name']}"
+            for index, term in enumerate(self.variant.formula_terms, start=1)
+        ]
+
     def reset(self, *args, **kwargs):
         obs, info = self.base_env.reset(*args, **kwargs)
         self._prev_u_v = 0.0
@@ -220,30 +564,133 @@ class ReplicaRewardEnv:
             "action_delta": [],
             "reward_variant_name": [],
         }
+        for key in self._custom_term_keys():
+            self._reward_history[key] = []
         return obs, info
+
+    @staticmethod
+    def _last(history: Mapping[str, Any], key: str, default: float = 0.0) -> float:
+        values = history.get(key, [])
+        if isinstance(values, (list, tuple)) and values:
+            value = values[-1]
+        else:
+            value = default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _formula_context(
+        self,
+        history: Mapping[str, Any],
+        info: Mapping[str, Any],
+        *,
+        action_delta: float,
+    ) -> dict[str, float]:
+        x_m = float(info.get("x_m", self._last(history, "x_m")))
+        x_s = float(info.get("x_s", self._last(history, "x_s")))
+        v_m = self._last(history, "v_m")
+        v_s = self._last(history, "v_s")
+        f_h = float(info.get("F_h", self._last(history, "F_h")))
+        f_e = float(info.get("F_e", self._last(history, "F_e")))
+        pos_error = self._last(history, "pos_error", x_m - x_s)
+        velocity_error = v_m - v_s
+        transparency_error = self._last(history, "transparency_error", (f_e * v_m) - (f_h * v_s))
+        force_diff = f_e - f_h
+        u_v = self._last(history, "u_v", float(info.get("u_v", 0.0)))
+        requested_u_v = self._last(history, "requested_u_v", float(info.get("requested_u_v", u_v)))
+        time_s = self._last(history, "time", float(info.get("time", 0.0)))
+        episode_duration = float(info.get("episode_duration", getattr(self.base_env, "episode_duration", cfg.EPISODE_DURATION)))
+
+        stroke_max = float(getattr(getattr(self.base_env, "parms", None), "l_cyl", 0.0) or 0.0)
+        edge_buffer_m = float(self.variant.edge_buffer_m)
+        edge_severity = 0.0
+        if edge_buffer_m > 0.0:
+            edge_severity = max(
+                _edge_severity(x_m, stroke_max, edge_buffer_m),
+                _edge_severity(x_s, stroke_max, edge_buffer_m),
+            )
+        low_force_threshold_n = float(self.variant.low_force_threshold_n)
+        low_force_scale = (
+            1.0 - min(abs(f_h) / low_force_threshold_n, 1.0)
+            if low_force_threshold_n > 0.0
+            else 0.0
+        )
+
+        context = {
+            "time": time_s,
+            "time_fraction": time_s / max(abs(episode_duration), 1e-9),
+            "env_id": float(info.get("env_id", self._last(history, "env_id"))),
+            "x_m": x_m,
+            "x_s": x_s,
+            "x_m_centered": float(info.get("x_m_centered", self._last(history, "x_m_centered"))),
+            "x_s_centered": float(info.get("x_s_centered", self._last(history, "x_s_centered"))),
+            "v_m": v_m,
+            "v_s": v_s,
+            "P_m1": self._last(history, "P_m1"),
+            "P_m2": self._last(history, "P_m2"),
+            "P_s1": self._last(history, "P_s1"),
+            "P_s2": self._last(history, "P_s2"),
+            "mdot_L1": self._last(history, "mdot_L1"),
+            "mdot_L2": self._last(history, "mdot_L2"),
+            "x_v": float(info.get("x_v", self._last(history, "x_v"))),
+            "x_v_dot": float(info.get("x_v_dot", self._last(history, "x_v_dot"))),
+            "F_h": f_h,
+            "F_e": f_e,
+            "u_v": u_v,
+            "requested_u_v": requested_u_v,
+            "action_delta": float(action_delta),
+            "pos_error": pos_error,
+            "tracking_error": pos_error,
+            "velocity_error": velocity_error,
+            "transparency_error": transparency_error,
+            "force_diff": force_diff,
+            "delta_P_m": self._last(history, "P_m1") - self._last(history, "P_m2"),
+            "delta_P_s": self._last(history, "P_s1") - self._last(history, "P_s2"),
+            "P_m1_minus_P_s1": self._last(history, "P_m1") - self._last(history, "P_s1"),
+            "P_m2_minus_P_s2": self._last(history, "P_m2") - self._last(history, "P_s2"),
+            "edge_severity": edge_severity,
+            "low_force_edge_severity": edge_severity * low_force_scale,
+        }
+        for key, value in list(context.items()):
+            context[f"abs_{key}"] = abs(float(value))
+        return context
 
     def _compute_reward(
         self,
         terminated: bool,
         info: dict[str, Any],
-    ) -> tuple[float, float, float, float, float, float, float, float, float, float, float]:
+    ) -> tuple[float, float, float, float, float, float, float, float, float, float, float, dict[str, float]]:
         history = self.base_env.render() or {}
-        pos_error = float(history.get("pos_error", [0.0])[-1])
-        velocity_error = float(history.get("v_m", [0.0])[-1]) - float(history.get("v_s", [0.0])[-1])
-        transparency_error = float(history.get("transparency_error", [0.0])[-1])
-        force_diff = float(history.get("F_e", [0.0])[-1]) - float(history.get("F_h", [0.0])[-1])
-        u_v = float(history.get("u_v", [0.0])[-1])
+        pos_error = self._last(history, "pos_error")
+        velocity_error = self._last(history, "v_m") - self._last(history, "v_s")
+        transparency_error = self._last(history, "transparency_error")
+        force_diff = self._last(history, "F_e") - self._last(history, "F_h")
+        u_v = self._last(history, "u_v")
         action_delta = float(u_v - self._prev_u_v)
         self._prev_u_v = u_v
-        reward, track_term, transparency_term, effort_term, jerk_term, velocity_term, force_diff_term = compute_reward_terms(
-            pos_error=pos_error,
-            velocity_error=velocity_error,
-            transparency_error=transparency_error,
-            force_diff=force_diff,
-            u_v=u_v,
-            action_delta=action_delta,
-            variant=self.variant,
-        )
+
+        custom_terms: dict[str, float] = {}
+        if self.variant.formula_terms:
+            context = self._formula_context(history, info, action_delta=action_delta)
+            reward, grouped_terms, custom_terms = reward_formula_from_context(context, self.variant)
+            track_term = grouped_terms["track"]
+            transparency_term = grouped_terms["transparency"]
+            effort_term = grouped_terms["effort"]
+            jerk_term = grouped_terms["jerk"]
+            velocity_term = grouped_terms["velocity"]
+            force_diff_term = grouped_terms["force_diff"]
+        else:
+            reward, track_term, transparency_term, effort_term, jerk_term, velocity_term, force_diff_term = compute_reward_terms(
+                pos_error=pos_error,
+                velocity_error=velocity_error,
+                transparency_error=transparency_error,
+                force_diff=force_diff,
+                u_v=u_v,
+                action_delta=action_delta,
+                variant=self.variant,
+            )
+
         edge_penalty = 0.0
         low_force_edge_penalty = 0.0
         edge_buffer_m = float(self.variant.edge_buffer_m)
@@ -289,6 +736,7 @@ class ReplicaRewardEnv:
             action_delta,
             velocity_term,
             force_diff_term,
+            custom_terms,
         )
 
     def _record_reward_terms(
@@ -304,6 +752,7 @@ class ReplicaRewardEnv:
         action_delta: float,
         velocity_term: float,
         force_diff_term: float,
+        custom_terms: Mapping[str, float] | None = None,
     ) -> None:
         self._reward_history["reward"].append(float(reward))
         self._reward_history["reward_track"].append(float(track_term))
@@ -317,6 +766,10 @@ class ReplicaRewardEnv:
         self._reward_history["reward_terminal_penalty"].append(float(terminal_penalty))
         self._reward_history["action_delta"].append(float(action_delta))
         self._reward_history["reward_variant_name"].append(self.variant.name)
+        custom_terms = dict(custom_terms or {})
+        for key in self._custom_term_keys():
+            name = key.replace("reward_term_", "", 1)
+            self._reward_history[key].append(float(custom_terms.get(name, 0.0)))
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.base_env.step(action)
@@ -332,6 +785,7 @@ class ReplicaRewardEnv:
             action_delta,
             velocity_term,
             force_diff_term,
+            custom_terms,
         ) = self._compute_reward(terminated, info)
         self._record_reward_terms(
             reward,
@@ -345,6 +799,7 @@ class ReplicaRewardEnv:
             action_delta,
             velocity_term,
             force_diff_term,
+            custom_terms,
         )
         return obs, reward, terminated, truncated, info
 
@@ -362,6 +817,7 @@ class ReplicaRewardEnv:
             action_delta,
             velocity_term,
             force_diff_term,
+            custom_terms,
         ) = self._compute_reward(terminated, info)
         self._record_reward_terms(
             reward,
@@ -375,6 +831,7 @@ class ReplicaRewardEnv:
             action_delta,
             velocity_term,
             force_diff_term,
+            custom_terms,
         )
         return obs, reward, terminated, truncated, info
 
@@ -398,4 +855,6 @@ class ReplicaRewardEnv:
         merged["reward_terminal_penalty"] = list(self._reward_history.get("reward_terminal_penalty", []))
         merged["action_delta"] = list(self._reward_history.get("action_delta", []))
         merged["reward_variant_name"] = list(self._reward_history.get("reward_variant_name", []))
+        for key in self._custom_term_keys():
+            merged[key] = list(self._reward_history.get(key, []))
         return merged

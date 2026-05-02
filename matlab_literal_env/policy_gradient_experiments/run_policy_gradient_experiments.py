@@ -90,6 +90,8 @@ def main() -> None:
     parser.add_argument("--stroke-limit-mode", choices=["terminate", "clamp"], default="clamp")
     parser.add_argument("--reward-variant", default="eqgrad_t40_tr40_nojerk")
     parser.add_argument("--state-variant", default="S0_baseline_full10")
+    parser.add_argument("--reward-spec-json", default=None)
+    parser.add_argument("--state-spec-json", default=None)
     parser.add_argument("--train-episodes", type=int, default=2500)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--parallel-envs", type=int, default=None)
@@ -131,6 +133,8 @@ def main() -> None:
             "fe_mode": str(args.fe_mode),
             "reward_variant": str(args.reward_variant),
             "state_variant": str(args.state_variant),
+            "reward_spec_json": None if args.reward_spec_json is None else str(args.reward_spec_json),
+            "state_spec_json": None if args.state_spec_json is None else str(args.state_spec_json),
             "parallel_workers": int(args.parallel_workers),
             "worker_torch_threads": int(worker_torch_threads),
         },
@@ -142,8 +146,8 @@ def main() -> None:
         runner._log(f"skip stage baselines: {stage_dir}")
         return
 
-    state_variant = get_policy_gradient_state_variant(str(args.state_variant))
-    reward_variant = get_policy_gradient_reward_variant(str(args.reward_variant))
+    state_variant = get_policy_gradient_state_variant(str(args.state_variant), args.state_spec_json)
+    reward_variant = get_policy_gradient_reward_variant(str(args.reward_variant), args.reward_spec_json)
     variant_name = f"{algo_display_name(args.algo)}_{reward_variant.name}_30s10s"
     out_dir = stage_dir / algo_output_dir_name(str(args.algo))
     result = train_policy_gradient_variant(
