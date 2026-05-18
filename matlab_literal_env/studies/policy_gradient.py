@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,8 +43,8 @@ from .common import (
     save_training_plot,
     write_run_summary,
 )
-from .dqn_state_variants import DQNStateVariant, get_dqn_state_variant
-from .rewarding import ReplicaRewardEnv, RewardVariant, reward_variant_from_name
+from .dqn_state_variants import DQNStateVariant, get_dqn_state_variant, load_custom_dqn_state_variant
+from .rewarding import ReplicaRewardEnv, RewardVariant, load_reward_variant_from_json, reward_variant_from_name
 
 
 PG_ALGO_PPO_CONTINUOUS = "ppo_continuous"
@@ -808,6 +808,9 @@ def train_policy_gradient_variant(
             "evaluation_history_mode": "mean_over_test_episodes",
             "obs_dim": int(state_variant.obs_dim),
             "state_features": list(state_variant.feature_names),
+            "state_variant_description": str(state_variant.description),
+            "state_spec": state_variant.metadata,
+            "reward_config": asdict(reward_variant),
             "episode_duration": float(env_kwargs["episode_duration"]),
             "env_switch_time": float(env_kwargs["env_switch_time"]),
             "terminate_on_error": bool(env_kwargs["terminate_on_error"]),
@@ -823,9 +826,13 @@ def train_policy_gradient_variant(
     return result
 
 
-def get_policy_gradient_state_variant(name: str) -> DQNStateVariant:
+def get_policy_gradient_state_variant(name: str, spec_json: str | Path | None = None) -> DQNStateVariant:
+    if spec_json:
+        return load_custom_dqn_state_variant(spec_json)
     return get_dqn_state_variant(name)
 
 
-def get_policy_gradient_reward_variant(name: str) -> RewardVariant:
+def get_policy_gradient_reward_variant(name: str, spec_json: str | Path | None = None) -> RewardVariant:
+    if spec_json:
+        return load_reward_variant_from_json(spec_json)
     return reward_variant_from_name(name)

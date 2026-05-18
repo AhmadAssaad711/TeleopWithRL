@@ -498,6 +498,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "P_m2": [],
             "P_s1": [],
             "P_s2": [],
+            "mdot_L1": [],
+            "mdot_L2": [],
             "F_h": [],
             "F_h_nominal": [],
             "F_h_noise": [],
@@ -506,6 +508,7 @@ class SimuOriginalReplicaEnv(gym.Env):
             "u_v": [],
             "requested_u_v": [],
             "x_v": [],
+            "x_v_dot": [],
             "env_id": [],
             "env_label": [],
             "pos_error": [],
@@ -542,6 +545,8 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["P_m2"].append(self.state[self.IX_PM2])
         self._history["P_s1"].append(self.state[self.IX_PS1])
         self._history["P_s2"].append(self.state[self.IX_PS2])
+        self._history["mdot_L1"].append(self.state[self.IX_ML1])
+        self._history["mdot_L2"].append(self.state[self.IX_ML2])
         self._history["F_h"].append(self.F_h)
         self._history["F_h_nominal"].append(self.F_h_nominal)
         self._history["F_h_noise"].append(self.F_h_noise)
@@ -550,6 +555,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["u_v"].append(self.last_u_v)
         self._history["requested_u_v"].append(self.requested_u_v)
         self._history["x_v"].append(self.state[self.IX_XV])
+        self._history["x_v_dot"].append(self.state[self.IX_VV])
         self._history["env_id"].append(self.current_env_id)
         self._history["env_label"].append(self.current_env_label)
         self._history["pos_error"].append(pos_error)
@@ -691,6 +697,10 @@ class SimuOriginalReplicaEnv(gym.Env):
             "env_label": self.current_env_label,
             "x_m": self.state[self.IX_XM],
             "x_s": self.state[self.IX_XS],
+            "x_v": self.state[self.IX_XV],
+            "x_v_dot": self.state[self.IX_VV],
+            "mdot_L1": self.state[self.IX_ML1],
+            "mdot_L2": self.state[self.IX_ML2],
             "x_eq": self.x_eq,
             "x_m_centered": x_m_centered,
             "x_s_centered": x_s_centered,

@@ -17,9 +17,22 @@ def _python_exe() -> str:
                 search_roots.append(candidate)
     for root in search_roots:
         candidate = (root / python_rel).resolve()
-        if candidate.exists():
+        if candidate.exists() and _python_runs(candidate):
             return str(candidate)
     return sys.executable
+
+
+def _python_runs(path: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [str(path), "-c", "import sys"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
@@ -72,6 +85,10 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
         "--worker-torch-threads",
         str(args.worker_torch_threads),
     ]
+    if args.reward_spec_json is not None:
+        cmd.extend(["--reward-spec-json", str(args.reward_spec_json)])
+    if args.state_spec_json is not None:
+        cmd.extend(["--state-spec-json", str(args.state_spec_json)])
     if args.total_timesteps is not None:
         cmd.extend(["--total-timesteps", str(args.total_timesteps)])
     if args.parallel_envs is not None:
@@ -102,6 +119,8 @@ def main() -> None:
     parser.add_argument("--force-waveform", choices=["sine", "cosine", "square", "multisine"], default="sine")
     parser.add_argument("--reward-variant", default="eqgrad_t40_tr40_nojerk")
     parser.add_argument("--state-variant", default="S0_baseline_full10")
+    parser.add_argument("--reward-spec-json", default=None)
+    parser.add_argument("--state-spec-json", default=None)
     parser.add_argument("--reset-position-mode", choices=["midpoint", "zero"], default="midpoint")
     parser.add_argument("--stroke-limit-mode", choices=["terminate", "clamp"], default="clamp")
     parser.add_argument("--train-episodes", type=int, default=2500)

@@ -4,6 +4,7 @@ import csv
 import html
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -39,13 +40,26 @@ def repo_paths(start: str | Path | None = None) -> dict[str, Path]:
     }
 
 
+def _python_runs(path: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [str(path), "-c", "import sys"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
 def project_python_executable(start: str | Path | None = None) -> Path:
     repo = find_repo_root(start)
     workspace = repo.parent
     python_rel = Path(".venv") / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
     for root in (workspace, repo):
         candidate = (root / python_rel).resolve()
-        if candidate.exists():
+        if candidate.exists() and _python_runs(candidate):
             return candidate
     return Path(sys.executable).resolve()
 
