@@ -16,8 +16,6 @@ Main entry points:
 ```powershell
 python -m TeleopWithRL.matlab_literal_env.dqn_experiments.run_dqn_experiments
 python -m TeleopWithRL.matlab_literal_env.dqn_experiments.run_dqn_baselines_both_fe
-python -m TeleopWithRL.matlab_literal_env.dqn_experiments.run_shared_baselines_in_dqn_folder
-python -m TeleopWithRL.matlab_literal_env.dqn_experiments.run_dqn_variant_both_fe
 ```
 
 The old copied `baseline_matlab_literal_env/` snapshot was removed because it
