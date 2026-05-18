@@ -6,8 +6,9 @@ out-of-bounds behavior.
 
 It does not use the shared all-agent study runner.
 
-Main entry point:
+Main notebook entry points:
 
 ```powershell
 python -m TeleopWithRL.matlab_literal_env.ql_experiments.run_ql_experiments
+python -m TeleopWithRL.matlab_literal_env.ql_experiments.run_ql_baselines_both_fe
 ```

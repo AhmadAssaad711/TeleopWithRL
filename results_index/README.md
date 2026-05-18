@@ -5,7 +5,6 @@ repo's experiment artifacts.
 
 Raw generated result trees are intentionally kept out of Git:
 
-- `python_env/results/`
 - `matlab_literal_env/results/`
 - `matlab_literal_env/dqn_experiments/results/`
 - `matlab_literal_env/ql_experiments/results/`

@@ -4,9 +4,9 @@ This folder is only for the actual MATLAB/Simulink reference environment.
 
 - `SimuOriginal.slx`
 
-Reference parameter and geometry definitions live separately in:
+Replica-side constants live in:
 
-- `../reference_geometry/ParmsOriginal.m`
+- `../matlab_literal_env/simuoriginal_replica.py`
 
 This `SimuOriginal.slx` copy is the edited version with the control-law path removed at the top level:
 

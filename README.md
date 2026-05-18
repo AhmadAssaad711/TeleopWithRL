@@ -14,32 +14,21 @@ notebooks.
   - **Primary project workspace. Start here.**
   - Divided by topic: repo map, MATLAB parity, baselines, ablations,
     generalization, policy-gradient methods, and results cataloging.
-- `reference_geometry/`
-  - Reference plant/geometry constants and parameter sources.
-  - `ParmsOriginal.m` is the MATLAB parameter source used by the Simulink model
-    and mirrored by the Python configs.
 - `matlab_env/`
   - Actual MATLAB/Simulink reference environment.
-  - Contains the focused `SimuOriginal.slx` model and MATLAB notes for running
-    or comparing against the original plant.
+  - Contains the focused `SimuOriginal.slx` model used as the MATLAB reference.
 - `matlab_literal_env/`
   - Python environment that mirrors the MATLAB/Simulink plant as literally as
     possible.
   - Contains the SimuOriginal replica, Gym-style environment wrapper, study
-    code, and algorithm-specific experiment launchers.
-- `python_env/`
-  - Lightweight wrappers around the active Python `TeleopEnv` workflows.
-- `experiments/`
-  - Shared Python experiment drivers for long studies, ablations, saved-policy
-    evaluation, and plant I/O analysis.
+    code, and notebook-called experiment launchers.
 - `results_index/`
   - Organized, notebook-friendly result catalog.
   - Raw generated result folders are kept out of Git; this folder tracks the
     curated index that notebooks can read.
 - Root Python modules
-  - `teleop_env.py`, `config.py`, `mrac_controller.py`, `dqn_agent.py`,
-    `q_learning_agent.py`, `train_dqn.py`, and `train_q_learning.py` are the
-    core reusable implementation pieces.
+  - `config.py`, `dqn_agent.py`, and `q_learning_agent.py` are kept because the
+    MATLAB-literal notebook workflow imports them.
 
 ## Notebook Map
 
@@ -63,11 +52,10 @@ The notebooks are intentionally separated into their own top-level folder.
 The MATLAB pieces are split deliberately:
 
 - `matlab_env/` is for the actual MATLAB/Simulink environment.
-- `reference_geometry/` is for reference parameters and geometry constants.
 - `matlab_literal_env/` is the Python reproduction of the MATLAB dynamics.
 
-The active MATLAB-parity work is centered on `matlab_env/SimuOriginal.slx`,
-using `reference_geometry/ParmsOriginal.m` as the parameter source.
+The active MATLAB-parity work is centered on `matlab_env/SimuOriginal.slx`.
+The replica constants live in `matlab_literal_env/simuoriginal_replica.py`.
 
 Current parity notes:
 
@@ -94,7 +82,6 @@ Tracked result organization lives in `results_index/`:
 
 Raw generated outputs, when present locally, usually live under:
 
-- `python_env/results/`
 - `matlab_literal_env/results/`
 - `matlab_literal_env/dqn_experiments/results/`
 - `matlab_literal_env/ql_experiments/results/`
@@ -124,5 +111,6 @@ python -m pytest
 
 - Keep notebooks in `notebooks/`; they are the main deliverable.
 - Keep MATLAB/Simulink source in `matlab_env/`.
-- Keep MATLAB parameter/geometry references in `reference_geometry/`.
+- Keep replica source and notebook-called experiment launchers in
+  `matlab_literal_env/`.
 - Keep generated results out of Git and index them through `results_index/`.
