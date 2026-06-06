@@ -82,6 +82,7 @@ def tracking_jerk_no_force_transparency_reward_variant() -> RewardVariant:
     return RewardVariant(
         name="track_jerk_no_force_trans",
         tracking_weight=float(cfg.ALPHA_TRACKING),
+        tracking_scale_m=float(cfg.POS_ERROR_FAIL_THRESHOLD),
         transparency_weight=0.0,
         jerk_weight=0.05,
         use_jerk=True,
