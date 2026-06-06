@@ -50,7 +50,7 @@ def _force_waveform_value(phase: float, waveform: str) -> float:
         return math.sin(phase)
     if waveform == "cosine":
         return math.cos(phase)
-    if waveform == "square":
+    if waveform in {"square", "pulse"}:
         return 1.0 if math.sin(phase) >= 0.0 else -1.0
     if waveform == "ramp":
         phase_mod = float(phase) % _TWO_PI
@@ -230,6 +230,14 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.force_noise_components = (
             _build_force_noise_components(self.force_noise_seed) if self.force_noise_std > 0.0 else ()
         )
+        self.force_release_time = getattr(self, "force_release_time", getattr(self, "fh_release_time", None))
+        self.force_release_value = float(getattr(self, "force_release_value", getattr(self, "fh_release_value", 0.0)))
+        self.force_chirp_end_freq_rad = float(
+            getattr(self, "force_chirp_end_freq_rad", getattr(self, "fh_chirp_end_freq_rad", self.force_freq_rad))
+        )
+        self.force_chirp_duration = float(
+            getattr(self, "force_chirp_duration", getattr(self, "fh_chirp_duration", self.episode_duration))
+        )
         self.fh_amp = self.force_amp
         self.fh_bias = self.force_bias
         self.fh_freq = self.force_freq
@@ -269,9 +277,27 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.Be = float(Be)
         self.Ke = float(Ke)
 
-    def _force_components(self, t: float) -> tuple[float, float, float]:
+    def _force_nominal_value(self, t: float) -> float:
+        if self.force_waveform == "chirp":
+            duration = max(abs(float(self.force_chirp_duration)), 1e-9)
+            t_eff = min(max(float(t), 0.0), duration)
+            end_freq = float(self.force_chirp_end_freq_rad)
+            chirp_rate = (end_freq - float(self.force_freq_rad)) / duration
+            phase = self.force_phase + (self.force_freq_rad * t_eff) + (0.5 * chirp_rate * t_eff ** 2)
+            if t > duration:
+                phase += end_freq * (float(t) - duration)
+            return self.force_bias + (self.force_amp * math.sin(phase))
+
         phase = (self.force_freq_rad * t) + self.force_phase
-        nominal = self.force_bias + (self.force_amp * _force_waveform_value(phase, self.force_waveform))
+        return self.force_bias + (self.force_amp * _force_waveform_value(phase, self.force_waveform))
+
+    def _force_components(self, t: float) -> tuple[float, float, float]:
+        release_time = self.force_release_time
+        if release_time is not None and float(t) >= float(release_time):
+            release_value = float(self.force_release_value)
+            return release_value, 0.0, release_value
+
+        nominal = self._force_nominal_value(t)
         noise = _force_noise_signal(
             t,
             self.force_freq,
@@ -281,12 +307,6 @@ class SimuOriginalReplicaEnv(gym.Env):
         return nominal, noise, nominal + noise
 
     def _force_input(self, t: float) -> float:
-        if self.force_noise_std <= 0.0:
-            phase = (self.force_freq_rad * t) + self.force_phase
-            if self.force_waveform == "sine":
-                return self.force_bias + (self.force_amp * math.sin(phase))
-            if self.force_waveform == "cosine":
-                return self.force_bias + (self.force_amp * math.cos(phase))
         _, _, total = self._force_components(t)
         return total
 
@@ -456,6 +476,10 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.force_noise_std = 0.0
         self.force_noise_seed = 0
         self.force_noise_components: tuple[tuple[float, float, float], ...] | tuple[()] = ()
+        self.force_release_time = None
+        self.force_release_value = 0.0
+        self.force_chirp_end_freq_rad = _TWO_PI * self.force_freq
+        self.force_chirp_duration = self.episode_duration
         self.fe_mode = FE_MODE_GUI
         for key in (
             "force_amp",
@@ -466,6 +490,10 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_waveform",
             "force_noise_std",
             "force_noise_seed",
+            "force_release_time",
+            "force_release_value",
+            "force_chirp_end_freq_rad",
+            "force_chirp_duration",
             "fe_mode",
             "legacy_baseline_env",
             "reset_position_mode",
@@ -481,6 +509,10 @@ class SimuOriginalReplicaEnv(gym.Env):
             "fh_waveform",
             "fh_noise_std",
             "fh_noise_seed",
+            "fh_release_time",
+            "fh_release_value",
+            "fh_chirp_end_freq_rad",
+            "fh_chirp_duration",
         ):
             if key in options:
                 setattr(self, key, options[key])
@@ -759,6 +791,10 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_freq": self.force_freq,
             "force_freq_rad": self.force_freq_rad,
             "force_waveform": self.force_waveform,
+            "force_release_time": self.force_release_time,
+            "force_release_value": self.force_release_value,
+            "force_chirp_end_freq_rad": self.force_chirp_end_freq_rad,
+            "force_chirp_duration": self.force_chirp_duration,
             "fe_mode": self.fe_mode,
             "legacy_baseline_env": self.legacy_baseline_env,
             "reset_position_mode": self.reset_position_mode,
