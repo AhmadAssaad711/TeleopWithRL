@@ -139,7 +139,9 @@ class SimuOriginalReplicaEnv(gym.Env):
             raise ValueError("SimuOriginalReplicaEnv currently supports only force-driven master input.")
 
         self.parms = parms or ParmsOriginal()
+        self._tube_compliance = float(self.parms.tube_compliance)
         self.profile = profile or SimuOriginalProfile(fixed_step=self.parms.Ts)
+        self._default_profile = self.profile
         self.episode_duration = float(
             cfg.EPISODE_DURATION if episode_duration is None else episode_duration
         )
@@ -279,6 +281,12 @@ class SimuOriginalReplicaEnv(gym.Env):
         return nominal, noise, nominal + noise
 
     def _force_input(self, t: float) -> float:
+        if self.force_noise_std <= 0.0:
+            phase = (self.force_freq_rad * t) + self.force_phase
+            if self.force_waveform == "sine":
+                return self.force_bias + (self.force_amp * math.sin(phase))
+            if self.force_waveform == "cosine":
+                return self.force_bias + (self.force_amp * math.cos(phase))
         _, _, total = self._force_components(t)
         return total
 
@@ -305,49 +313,53 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
 
     def _volumes_are_valid(self, replica_state: np.ndarray) -> bool:
-        s = SimuOriginalState.from_array(replica_state)
+        if not np.all(np.isfinite(replica_state)):
+            return False
+        xm = float(replica_state[3])
+        xs = float(replica_state[7])
         volumes = (
-            self.parms.V_md + self.parms.A_p * s.xm,
-            self.parms.V_md + self.parms.A_p * (self.parms.l_cyl - s.xm),
-            self.parms.V_md + self.parms.A_p * s.xs + self.parms.tube_compliance,
-            self.parms.V_sd + self.parms.A_p * (self.parms.l_cyl - s.xs) + self.parms.tube_compliance,
+            self.parms.V_md + self.parms.A_p * xm,
+            self.parms.V_md + self.parms.A_p * (self.parms.l_cyl - xm),
+            self.parms.V_md + self.parms.A_p * xs + self._tube_compliance,
+            self.parms.V_sd + self.parms.A_p * (self.parms.l_cyl - xs) + self._tube_compliance,
         )
-        return min(volumes) > 0.0 and bool(np.all(np.isfinite(replica_state)))
+        return min(volumes) > 0.0
 
     def _stroke_is_valid(self, replica_state: np.ndarray) -> bool:
         if not self.enforce_stroke_limit:
             return True
-        s = SimuOriginalState.from_array(replica_state)
+        xm = float(replica_state[3])
+        xs = float(replica_state[7])
         return bool(
-            self.stroke_min <= s.xm <= self.stroke_max
-            and self.stroke_min <= s.xs <= self.stroke_max
-            and np.all(np.isfinite((s.xm, s.xs)))
+            self.stroke_min <= xm <= self.stroke_max
+            and self.stroke_min <= xs <= self.stroke_max
+            and np.all(np.isfinite((xm, xs)))
         )
 
     def _apply_stroke_clamp(self, replica_state: np.ndarray) -> tuple[np.ndarray, bool]:
         clamped = np.asarray(replica_state, dtype=np.float64).copy()
-        if not np.all(np.isfinite(clamped)):
-            return clamped, False
 
         hit = False
-        if clamped[3] < self.stroke_min:
-            clamped[3] = self.stroke_min
+        stroke_min = self.stroke_min
+        stroke_max = self.stroke_max
+        if clamped[3] < stroke_min:
+            clamped[3] = stroke_min
             if clamped[2] < 0.0:
                 clamped[2] = 0.0
             hit = True
-        elif clamped[3] > self.stroke_max:
-            clamped[3] = self.stroke_max
+        elif clamped[3] > stroke_max:
+            clamped[3] = stroke_max
             if clamped[2] > 0.0:
                 clamped[2] = 0.0
             hit = True
 
-        if clamped[7] < self.stroke_min:
-            clamped[7] = self.stroke_min
+        if clamped[7] < stroke_min:
+            clamped[7] = stroke_min
             if clamped[6] < 0.0:
                 clamped[6] = 0.0
             hit = True
-        elif clamped[7] > self.stroke_max:
-            clamped[7] = self.stroke_max
+        elif clamped[7] > stroke_max:
+            clamped[7] = stroke_max
             if clamped[6] > 0.0:
                 clamped[6] = 0.0
             hit = True
@@ -414,6 +426,9 @@ class SimuOriginalReplicaEnv(gym.Env):
         merged_options = dict(self.default_reset_options)
         merged_options.update(options or {})
         options = merged_options
+        self.profile = self._default_profile
+        if "env_switch_time" in options and options["env_switch_time"] is not None:
+            self.env_switch_time = float(options["env_switch_time"])
 
         self.replica_state = build_saved_simuoriginal_state(
             self.parms,
@@ -469,6 +484,23 @@ class SimuOriginalReplicaEnv(gym.Env):
         ):
             if key in options:
                 setattr(self, key, options[key])
+        if any(
+            key in options
+            for key in ("pre_switch_Ke", "pre_switch_Be", "post_switch_Ke", "post_switch_Be", "K_e", "B_e")
+        ):
+            pre_Ke = float(options.get("pre_switch_Ke", self.profile.skin_Ke))
+            pre_Be = float(options.get("pre_switch_Be", self.profile.skin_Be))
+            default_post_Ke = pre_Ke + float(self.profile.delta_Ke_after_switch)
+            default_post_Be = pre_Be + float(self.profile.delta_Be_after_switch)
+            post_Ke = float(options.get("post_switch_Ke", options.get("K_e", default_post_Ke)))
+            post_Be = float(options.get("post_switch_Be", options.get("B_e", default_post_Be)))
+            self.profile = replace(
+                self.profile,
+                skin_Ke=pre_Ke,
+                skin_Be=pre_Be,
+                delta_Ke_after_switch=post_Ke - pre_Ke,
+                delta_Be_after_switch=post_Be - pre_Be,
+            )
         self.legacy_baseline_env = bool(getattr(self, "legacy_baseline_env", False))
         self.reset_position_mode = str(getattr(self, "reset_position_mode", self.reset_position_mode)).strip().lower()
         self.enforce_stroke_limit = bool(getattr(self, "enforce_stroke_limit", self.enforce_stroke_limit))
@@ -479,6 +511,17 @@ class SimuOriginalReplicaEnv(gym.Env):
             self.reset_position_mode = "zero"
             self.enforce_stroke_limit = False
         self.x_eq = 0.0 if self.reset_position_mode in {"zero", "origin", "legacy"} else 0.5 * float(self.parms.l_cyl)
+        if options.get("initial_state") is not None:
+            initial_state = np.asarray(options["initial_state"], dtype=np.float64).reshape(-1)
+            if initial_state.size != self.N_STATE:
+                raise ValueError(f"initial_state must have {self.N_STATE} entries, got {initial_state.size}")
+            self.replica_state = initial_state.copy()
+        if options.get("initial_state_delta") is not None:
+            initial_delta = np.asarray(options["initial_state_delta"], dtype=np.float64).reshape(-1)
+            if initial_delta.size != self.N_STATE:
+                raise ValueError(f"initial_state_delta must have {self.N_STATE} entries, got {initial_delta.size}")
+            self.replica_state = self.replica_state + initial_delta
+        self.state = self._to_env_state(self.replica_state)
         self.fe_mode = str(self.fe_mode).strip().lower()
         if self.fe_mode not in FE_MODE_CHOICES:
             raise ValueError(f"Unknown fe_mode: {self.fe_mode}")

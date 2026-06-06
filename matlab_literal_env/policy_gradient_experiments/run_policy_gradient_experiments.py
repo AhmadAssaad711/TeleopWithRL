@@ -50,6 +50,30 @@ def _suite_root(fe_mode: str, study_name: str) -> Path:
     return policy_gradient_suite_root(str(fe_mode), str(study_name))
 
 
+def _load_reset_options_json(path: str | None) -> list[dict]:
+    if path is None:
+        return []
+    with open(Path(path), "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if isinstance(payload, dict):
+        for key in ("signals", "reset_options", "scenarios"):
+            if key in payload:
+                payload = payload[key]
+                break
+    if not isinstance(payload, list):
+        raise TypeError(f"Reset-options JSON must contain a list, got {type(payload).__name__}")
+    options = []
+    for row in payload:
+        row = dict(row)
+        if isinstance(row.get("reset_options"), dict):
+            merged = dict(row["reset_options"])
+            if "name" in row and "name" not in merged:
+                merged["name"] = row["name"]
+            row = merged
+        options.append(row)
+    return options
+
+
 def _row_from_summary(summary: dict, variant_name: str) -> dict:
     return {
         "agent": str(summary["algo"]),
@@ -92,9 +116,16 @@ def main() -> None:
     parser.add_argument("--state-variant", default="S0_baseline_full10")
     parser.add_argument("--reward-spec-json", default=None)
     parser.add_argument("--state-spec-json", default=None)
+    parser.add_argument("--train-reset-options-json", default=None)
+    parser.add_argument("--eval-reset-options-json", default=None)
     parser.add_argument("--train-episodes", type=int, default=2500)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--parallel-envs", type=int, default=None)
+    parser.add_argument("--vec-env", choices=["auto", "dummy", "subproc"], default="auto")
+    parser.add_argument("--ppo-n-steps", type=int, default=None)
+    parser.add_argument("--ppo-batch-size", type=int, default=None)
+    parser.add_argument("--ppo-n-epochs", type=int, default=None)
+    parser.add_argument("--ppo-device", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--eval-every-episodes", type=int, default=100)
     parser.add_argument("--test-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
@@ -106,6 +137,8 @@ def main() -> None:
     args = parser.parse_args()
 
     worker_torch_threads = runner._configure_process_env(int(args.worker_torch_threads))
+    train_reset_options_pool = _load_reset_options_json(args.train_reset_options_json)
+    eval_reset_options_schedule = _load_reset_options_json(args.eval_reset_options_json)
     suite_root = _suite_root(str(args.fe_mode), str(args.study_name))
     suite_root.mkdir(parents=True, exist_ok=True)
     env_kwargs = runner._canonical_env_kwargs(args)
@@ -128,6 +161,11 @@ def main() -> None:
             "train_episodes": int(args.train_episodes),
             "total_timesteps": None if args.total_timesteps is None else int(args.total_timesteps),
             "parallel_envs": args.parallel_envs,
+            "vec_env": str(args.vec_env),
+            "ppo_n_steps": args.ppo_n_steps,
+            "ppo_batch_size": args.ppo_batch_size,
+            "ppo_n_epochs": args.ppo_n_epochs,
+            "ppo_device": str(args.ppo_device),
             "test_episodes": int(args.test_episodes),
             "seed": int(args.seed),
             "fe_mode": str(args.fe_mode),
@@ -135,6 +173,10 @@ def main() -> None:
             "state_variant": str(args.state_variant),
             "reward_spec_json": None if args.reward_spec_json is None else str(args.reward_spec_json),
             "state_spec_json": None if args.state_spec_json is None else str(args.state_spec_json),
+            "train_reset_options_json": None if args.train_reset_options_json is None else str(args.train_reset_options_json),
+            "eval_reset_options_json": None if args.eval_reset_options_json is None else str(args.eval_reset_options_json),
+            "train_signal_count": int(len(train_reset_options_pool)),
+            "eval_signal_count": int(len(eval_reset_options_schedule)),
             "parallel_workers": int(args.parallel_workers),
             "worker_torch_threads": int(worker_torch_threads),
         },
@@ -164,6 +206,13 @@ def main() -> None:
         total_timesteps=args.total_timesteps,
         parallel_envs=args.parallel_envs,
         eval_every_episodes=int(args.eval_every_episodes),
+        vec_env_type=str(args.vec_env),
+        ppo_n_steps=args.ppo_n_steps,
+        ppo_batch_size=args.ppo_batch_size,
+        ppo_n_epochs=args.ppo_n_epochs,
+        ppo_device=str(args.ppo_device),
+        train_reset_options_pool=train_reset_options_pool,
+        eval_reset_options_schedule=eval_reset_options_schedule,
     )
     summary_path = out_dir / "l" / "summary.json"
     with open(summary_path, "r", encoding="utf-8") as fh:

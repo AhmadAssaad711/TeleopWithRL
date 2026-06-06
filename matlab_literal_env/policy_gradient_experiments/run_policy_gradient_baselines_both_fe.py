@@ -84,7 +84,16 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
         str(args.parallel_workers),
         "--worker-torch-threads",
         str(args.worker_torch_threads),
+        "--vec-env",
+        str(args.vec_env),
     ]
+    if args.ppo_n_steps is not None:
+        cmd.extend(["--ppo-n-steps", str(args.ppo_n_steps)])
+    if args.ppo_batch_size is not None:
+        cmd.extend(["--ppo-batch-size", str(args.ppo_batch_size)])
+    if args.ppo_n_epochs is not None:
+        cmd.extend(["--ppo-n-epochs", str(args.ppo_n_epochs)])
+    cmd.extend(["--ppo-device", str(args.ppo_device)])
     if args.reward_spec_json is not None:
         cmd.extend(["--reward-spec-json", str(args.reward_spec_json)])
     if args.state_spec_json is not None:
@@ -126,6 +135,11 @@ def main() -> None:
     parser.add_argument("--train-episodes", type=int, default=2500)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--parallel-envs", type=int, default=None)
+    parser.add_argument("--vec-env", choices=["auto", "dummy", "subproc"], default="auto")
+    parser.add_argument("--ppo-n-steps", type=int, default=None)
+    parser.add_argument("--ppo-batch-size", type=int, default=None)
+    parser.add_argument("--ppo-n-epochs", type=int, default=None)
+    parser.add_argument("--ppo-device", choices=["cpu", "cuda", "auto"], default="cpu")
     parser.add_argument("--eval-every-episodes", type=int, default=100)
     parser.add_argument("--test-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)

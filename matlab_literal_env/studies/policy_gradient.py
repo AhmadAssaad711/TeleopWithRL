@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,17 +12,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from gymnasium import spaces
+from tqdm.auto import tqdm
 
 try:
     from stable_baselines3 import PPO, SAC, TD3
     from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.noise import NormalActionNoise
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
 except ImportError as exc:  # pragma: no cover - optional until runtime
     PPO = SAC = TD3 = None  # type: ignore[assignment]
     BaseCallback = object  # type: ignore[assignment]
     NormalActionNoise = None  # type: ignore[assignment]
-    DummyVecEnv = VecMonitor = None  # type: ignore[assignment]
+    DummyVecEnv = SubprocVecEnv = VecMonitor = None  # type: ignore[assignment]
     _SB3_IMPORT_ERROR = exc
 else:  # pragma: no cover - import side effect only
     _SB3_IMPORT_ERROR = None
@@ -36,6 +38,9 @@ from .common import (
     mk_run_dirs,
     plot_action_usage,
     plot_average_core_rollout,
+    plot_control_effect_dashboard,
+    plot_error_diagnostics,
+    plot_eval_signal_performance,
     plot_rollout_dashboard,
     plot_state_trajectory,
     rollout_metrics,
@@ -57,6 +62,7 @@ PG_ALGO_CHOICES = (
     PG_ALGO_SAC,
     PG_ALGO_PPO_DISCRETE,
 )
+PG_TRAIN_RESET_OPTIONS_POOL_KEY = "_pg_train_reset_options_pool"
 
 _CONTINUOUS_ACTION_ALGOS = {
     PG_ALGO_PPO_CONTINUOUS,
@@ -136,6 +142,11 @@ class PolicyGradientReplicaEnv(gym.Env):
         super().__init__()
         self.env_mode = str(env_mode)
         self.env_kwargs = dict(env_kwargs)
+        self.train_reset_options_pool = tuple(
+            dict(row)
+            for row in (self.env_kwargs.pop(PG_TRAIN_RESET_OPTIONS_POOL_KEY, None) or [])
+        )
+        self._reset_options_rng = np.random.default_rng(0)
         self.reward_variant = reward_variant
         self.state_variant = state_variant
         self.algo = str(algo)
@@ -164,7 +175,20 @@ class PolicyGradientReplicaEnv(gym.Env):
         transformed = self.state_variant.extractor(np.asarray(obs, dtype=np.float32), info or {})
         return np.asarray(transformed, dtype=np.float32)
 
+    def set_reset_options_seed(self, seed: int) -> None:
+        self._reset_options_rng = np.random.default_rng(int(seed))
+
+    def _sample_train_reset_options(self) -> dict[str, Any] | None:
+        if not self.train_reset_options_pool:
+            return None
+        idx = int(self._reset_options_rng.integers(0, len(self.train_reset_options_pool)))
+        return dict(self.train_reset_options_pool[idx])
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        if seed is not None:
+            self._reset_options_rng = np.random.default_rng(int(seed))
+        if options is None:
+            options = self._sample_train_reset_options()
         obs, info = self.reward_env.reset(seed=seed, options=options)
         self.last_obs = self._transform(obs, info)
         return self.last_obs.copy(), dict(info)
@@ -229,16 +253,25 @@ class PolicyGradientMetricsCallback(BaseCallback):
         self,
         *,
         total_episodes: int,
+        total_timesteps: int,
         eval_every_episodes: int,
         eval_episodes: int,
         eval_fn: Callable[[Any, int, int], tuple[dict[str, float], dict[str, Any]]],
+        progress_label: str = "PPO training",
+        progress_update_timesteps: int = 50,
         verbose: int = 0,
     ):
         super().__init__(verbose=verbose)
         self.total_episodes = int(max(1, total_episodes))
+        self.total_timesteps = int(max(1, total_timesteps))
         self.eval_every_episodes = int(max(1, eval_every_episodes))
         self.eval_episodes = int(max(1, eval_episodes))
         self.eval_fn = eval_fn
+        self.progress_label = str(progress_label)
+        self.progress_update_timesteps = int(max(1, progress_update_timesteps))
+        self._progress_bar: tqdm | None = None
+        self._last_progress_timestep = 0
+        self._final_episode_eval_recorded = False
 
         self.completed_episodes = 0
         self.episode_returns: list[float] = []
@@ -254,6 +287,37 @@ class PolicyGradientMetricsCallback(BaseCallback):
         self.eval_tracking_rmse: list[float] = []
         self.eval_transparency_rmse: list[float] = []
 
+    def _on_training_start(self) -> None:
+        self._progress_bar = tqdm(
+            total=self.total_timesteps,
+            desc=self.progress_label,
+            unit="ts",
+            miniters=self.progress_update_timesteps,
+            dynamic_ncols=True,
+        )
+        self._last_progress_timestep = 0
+
+    def _update_progress(self, *, force: bool = False) -> None:
+        if self._progress_bar is None:
+            return
+        current = min(int(self.num_timesteps), self.total_timesteps)
+        delta = current - self._last_progress_timestep
+        if delta <= 0:
+            return
+        if force or delta >= self.progress_update_timesteps or current >= self.total_timesteps:
+            self._progress_bar.update(delta)
+            self._last_progress_timestep = current
+            self._progress_bar.set_postfix(
+                episodes=f"{self.completed_episodes}/{self.total_episodes}",
+                refresh=False,
+            )
+
+    def _on_training_end(self) -> None:
+        self._update_progress(force=True)
+        if self._progress_bar is not None:
+            self._progress_bar.close()
+            self._progress_bar = None
+
     def _record_eval(self) -> None:
         eval_metrics, _ = self.eval_fn(self.model, self.eval_episodes, 10_000 + self.completed_episodes)
         self.eval_steps.append(self.completed_episodes)
@@ -262,6 +326,7 @@ class PolicyGradientMetricsCallback(BaseCallback):
         self.eval_transparency_rmse.append(float(eval_metrics["transparency_rmse_w"]))
 
     def _on_step(self) -> bool:
+        self._update_progress()
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
         if infos is None or dones is None:
@@ -283,11 +348,14 @@ class PolicyGradientMetricsCallback(BaseCallback):
             self.episode_post_transparency_rmse.append(float(metrics.get("post_switch_transparency_rmse_w", 0.0)))
             self.episode_invalid.append(float(metrics.get("invalid_episode", 0.0)))
 
-            if (
+            should_eval = (
                 self.completed_episodes == 1
                 or self.completed_episodes % self.eval_every_episodes == 0
-                or self.completed_episodes >= self.total_episodes
-            ):
+            )
+            if self.completed_episodes >= self.total_episodes and not self._final_episode_eval_recorded:
+                should_eval = True
+                self._final_episode_eval_recorded = True
+            if should_eval:
                 self._record_eval()
         return True
 
@@ -298,6 +366,7 @@ def evaluate_policy_gradient(
     *,
     n_episodes: int,
     seed_offset: int,
+    reset_options_schedule: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     episode_metrics: list[dict[str, float]] = []
     episode_histories: list[dict[str, Any]] = []
@@ -308,10 +377,47 @@ def evaluate_policy_gradient(
     tracking_error_fail_episodes = 0
     volume_singularity_episodes = 0
     episode_steps: list[int] = []
+    eval_episode: list[int] = []
+    eval_signal_name: list[str] = []
+    eval_signal_waveform: list[str] = []
+    eval_signal_amp_n: list[float] = []
+    eval_signal_bias_n: list[float] = []
+    eval_signal_omega_rad_s: list[float] = []
+    eval_signal_phase_rad: list[float] = []
+    eval_episode_tracking_rmse_m: list[float] = []
+    eval_episode_force_rmse_n: list[float] = []
+    eval_episode_transparency_rmse_w: list[float] = []
+    eval_episode_mean_reward: list[float] = []
+    eval_episode_mean_abs_u_v: list[float] = []
+    eval_episode_rms_u_v: list[float] = []
+    eval_episode_mean_abs_delta_u_v: list[float] = []
+    eval_episode_saturation_fraction: list[float] = []
+    eval_episode_requested_applied_rmse_v: list[float] = []
+    eval_episode_completed: list[float] = []
+    eval_episode_terminated: list[float] = []
+    eval_episode_truncated: list[float] = []
+    eval_episode_steps: list[int] = []
+    eval_episode_seconds: list[float] = []
+    eval_episode_termination_reason: list[str] = []
+    reset_options_schedule = list(reset_options_schedule or [])
+
+    def _option_float(options: dict[str, Any], *keys: str) -> float:
+        for key in keys:
+            if key in options and options[key] is not None:
+                try:
+                    return float(options[key])
+                except (TypeError, ValueError):
+                    continue
+        return float("nan")
 
     for ep in range(int(max(1, n_episodes))):
         env = env_factory()
-        obs, info = env.reset(seed=seed_offset + ep)
+        reset_options = (
+            dict(reset_options_schedule[ep % len(reset_options_schedule)])
+            if reset_options_schedule
+            else None
+        )
+        obs, info = env.reset(seed=seed_offset + ep, options=reset_options)
         done = False
         obs_trace: list[np.ndarray] = []
         final_info = dict(info)
@@ -328,23 +434,71 @@ def evaluate_policy_gradient(
             final_truncated = bool(truncated)
 
         history = history_with_obs(env.render() or {}, obs_trace)
+        if reset_options is not None:
+            history["signal_name"] = str(reset_options.get("name", f"signal_{ep + 1:03d}"))
         metrics = rollout_metrics(history, env_switch_time=float(getattr(env.base_env, "env_switch_time", cfg.ENV_SWITCH_TIME)))
         episode_metrics.append(metrics)
         episode_histories.append(history)
-        episode_steps.append(int(len(history.get("time", []))))
+        steps = int(len(history.get("time", [])))
+        seconds = float(steps * cfg.RL_DT)
+        episode_steps.append(steps)
 
-        if str(final_info.get("termination_reason")) == "max_steps" or final_truncated:
+        termination_reason = str(final_info.get("termination_reason", ""))
+        completed = termination_reason == "max_steps" or final_truncated
+        if completed:
             completed_episodes += 1
-        if str(final_info.get("termination_reason")) == "stroke_limit":
+        if termination_reason == "stroke_limit":
             stroke_limit_episodes += 1
-        if str(final_info.get("termination_reason")) == "tracking_error_fail":
+        if termination_reason == "tracking_error_fail":
             tracking_error_fail_episodes += 1
-        if str(final_info.get("termination_reason")) == "volume_singularity":
+        if termination_reason == "volume_singularity":
             volume_singularity_episodes += 1
         if final_terminated:
             terminated_episodes += 1
         if final_truncated:
             truncated_episodes += 1
+
+        signal_options = dict(reset_options or {})
+        eval_episode.append(ep + 1)
+        eval_signal_name.append(str(signal_options.get("name", f"signal_{ep + 1:03d}")))
+        eval_signal_waveform.append(str(signal_options.get("force_waveform", signal_options.get("fh_waveform", "signal"))))
+        eval_signal_amp_n.append(_option_float(signal_options, "force_amp", "fh_amp", "force_amp_N"))
+        eval_signal_bias_n.append(_option_float(signal_options, "force_bias", "fh_bias", "force_bias_N"))
+        omega_rad_s = _option_float(signal_options, "force_freq_rad", "fh_freq_rad", "omega", "omega_rad_s")
+        if not np.isfinite(omega_rad_s):
+            freq_hz = _option_float(signal_options, "force_freq", "fh_freq", "freq_hz")
+            if np.isfinite(freq_hz):
+                omega_rad_s = float(2.0 * np.pi * freq_hz)
+        eval_signal_omega_rad_s.append(omega_rad_s)
+        eval_signal_phase_rad.append(_option_float(signal_options, "force_phase", "fh_phase", "force_phase_rad"))
+        eval_episode_tracking_rmse_m.append(float(metrics.get("tracking_rmse_m", 0.0)))
+        eval_episode_force_rmse_n.append(float(metrics.get("force_rmse_n", 0.0)))
+        eval_episode_transparency_rmse_w.append(float(metrics.get("transparency_rmse_w", 0.0)))
+        eval_episode_mean_reward.append(float(metrics.get("mean_reward", 0.0)))
+        u_v = history_array(history, "u_v", dtype=np.float64)
+        requested_u_v = history_array(history, "requested_u_v", dtype=np.float64)
+        if u_v.size:
+            action_limit = float(np.max(np.abs(_resolve_action_levels(getattr(env.base_env, "action_levels", None)))))
+            eval_episode_mean_abs_u_v.append(float(np.mean(np.abs(u_v))))
+            eval_episode_rms_u_v.append(float(np.sqrt(np.mean(u_v ** 2))))
+            eval_episode_mean_abs_delta_u_v.append(float(np.mean(np.abs(np.diff(u_v)))) if u_v.size >= 2 else 0.0)
+            eval_episode_saturation_fraction.append(float(np.mean(np.abs(u_v) >= 0.98 * action_limit)))
+            if requested_u_v.size == u_v.size:
+                eval_episode_requested_applied_rmse_v.append(float(np.sqrt(np.mean((requested_u_v - u_v) ** 2))))
+            else:
+                eval_episode_requested_applied_rmse_v.append(float("nan"))
+        else:
+            eval_episode_mean_abs_u_v.append(0.0)
+            eval_episode_rms_u_v.append(0.0)
+            eval_episode_mean_abs_delta_u_v.append(0.0)
+            eval_episode_saturation_fraction.append(0.0)
+            eval_episode_requested_applied_rmse_v.append(float("nan"))
+        eval_episode_completed.append(float(completed))
+        eval_episode_terminated.append(float(final_terminated))
+        eval_episode_truncated.append(float(final_truncated))
+        eval_episode_steps.append(steps)
+        eval_episode_seconds.append(seconds)
+        eval_episode_termination_reason.append(termination_reason)
         env.close()
 
     aggregate = {
@@ -375,6 +529,31 @@ def evaluate_policy_gradient(
     aggregate_history["volume_singularity_episodes"] = int(volume_singularity_episodes)
     aggregate_history["mean_episode_steps"] = float(np.mean(episode_steps)) if episode_steps else 0.0
     aggregate_history["mean_episode_seconds"] = float(np.mean(episode_steps) * cfg.RL_DT) if episode_steps else 0.0
+    aggregate_history["eval_episode"] = eval_episode
+    aggregate_history["eval_signal_name"] = eval_signal_name
+    aggregate_history["eval_signal_waveform"] = eval_signal_waveform
+    aggregate_history["eval_signal_amp_n"] = eval_signal_amp_n
+    aggregate_history["eval_signal_bias_n"] = eval_signal_bias_n
+    aggregate_history["eval_signal_omega_rad_s"] = eval_signal_omega_rad_s
+    aggregate_history["eval_signal_phase_rad"] = eval_signal_phase_rad
+    aggregate_history["eval_episode_tracking_rmse_m"] = eval_episode_tracking_rmse_m
+    aggregate_history["eval_episode_force_rmse_n"] = eval_episode_force_rmse_n
+    aggregate_history["eval_episode_transparency_rmse_w"] = eval_episode_transparency_rmse_w
+    aggregate_history["eval_episode_mean_reward"] = eval_episode_mean_reward
+    aggregate_history["eval_episode_mean_abs_u_v"] = eval_episode_mean_abs_u_v
+    aggregate_history["eval_episode_rms_u_v"] = eval_episode_rms_u_v
+    aggregate_history["eval_episode_mean_abs_delta_u_v"] = eval_episode_mean_abs_delta_u_v
+    aggregate_history["eval_episode_saturation_fraction"] = eval_episode_saturation_fraction
+    aggregate_history["eval_episode_requested_applied_rmse_v"] = eval_episode_requested_applied_rmse_v
+    aggregate_history["eval_episode_completed"] = eval_episode_completed
+    aggregate_history["eval_episode_terminated"] = eval_episode_terminated
+    aggregate_history["eval_episode_truncated"] = eval_episode_truncated
+    aggregate_history["eval_episode_steps"] = eval_episode_steps
+    aggregate_history["eval_episode_seconds"] = eval_episode_seconds
+    aggregate_history["eval_episode_termination_reason"] = eval_episode_termination_reason
+    if reset_options_schedule:
+        aggregate_history["eval_signal_count"] = int(len(reset_options_schedule))
+        aggregate_history["eval_signal_names"] = [str(row.get("name", f"signal_{idx + 1:03d}")) for idx, row in enumerate(reset_options_schedule)]
     return aggregate, aggregate_history
 
 
@@ -420,6 +599,9 @@ def save_policy_gradient_visuals(
     plots_dir = Path(plots_dir)
     plot_average_core_rollout(history, plots_dir / "avg_roll.png", title, env_switch_time)
     plot_rollout_dashboard(history, plots_dir / "roll.png", title, env_switch_time)
+    plot_error_diagnostics(history, plots_dir / "err.png", title, env_switch_time)
+    plot_eval_signal_performance(history, plots_dir / "sigperf.png", title)
+    plot_control_effect_dashboard(history, plots_dir / "ctrl.png", title, env_switch_time)
     if action_mode == "discrete":
         plot_action_usage(history, plots_dir / "act.png", title, action_levels=action_levels)
     else:
@@ -554,19 +736,50 @@ def _build_vec_env(
     env_factory: Callable[[], PolicyGradientReplicaEnv],
     *,
     parallel_envs: int,
+    vec_env_type: str = "auto",
 ) -> Any:
     require_sb3()
+    parallel_envs = int(max(1, parallel_envs))
+    resolved_vec_env_type = _resolve_vec_env_type(vec_env_type, parallel_envs)
 
     def _make_env(rank: int):
         def _thunk():
             env = env_factory()
             env.parallel_envs = int(parallel_envs)
+            if hasattr(env, "set_reset_options_seed"):
+                env.set_reset_options_seed(10_000 + int(rank))
             return env
 
         return _thunk
 
-    env = DummyVecEnv([_make_env(idx) for idx in range(int(max(1, parallel_envs)))])
-    return VecMonitor(env)
+    env_fns = [_make_env(idx) for idx in range(parallel_envs)]
+    actual_vec_env_type = resolved_vec_env_type
+    try:
+        env = SubprocVecEnv(env_fns) if resolved_vec_env_type == "subproc" else DummyVecEnv(env_fns)
+    except Exception as exc:
+        if resolved_vec_env_type != "subproc":
+            raise
+        print(
+            "[policy_gradient] SubprocVecEnv failed; falling back to DummyVecEnv. "
+            f"Reason: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        actual_vec_env_type = "dummy"
+        env = DummyVecEnv(env_fns)
+    monitored_env = VecMonitor(env)
+    setattr(monitored_env, "teleop_resolved_vec_env_type", actual_vec_env_type)
+    return monitored_env
+
+
+def _resolve_vec_env_type(vec_env_type: str, parallel_envs: int) -> str:
+    vec_env_type = str(vec_env_type).strip().lower()
+    if vec_env_type not in {"auto", "dummy", "subproc"}:
+        raise ValueError(f"Unknown vec_env_type: {vec_env_type}")
+    if vec_env_type != "auto":
+        return vec_env_type
+    if os.name != "nt" and int(parallel_envs) > 1:
+        return "subproc"
+    return "dummy"
 
 
 def _build_model(
@@ -576,6 +789,10 @@ def _build_model(
     tensorboard_log: str,
     seed: int,
     total_timesteps: int,
+    ppo_n_steps: int | None = None,
+    ppo_batch_size: int | None = None,
+    ppo_n_epochs: int | None = None,
+    ppo_device: str = "cpu",
 ) -> Any:
     require_sb3()
     algo = str(algo)
@@ -584,20 +801,19 @@ def _build_model(
         "tensorboard_log": tensorboard_log,
         "seed": int(seed),
         "verbose": 0,
-        "device": "cpu",
+        "device": str(ppo_device),
     }
 
     if algo == PG_ALGO_PPO_CONTINUOUS:
+        ppo_kwargs = _model_hyperparameter_summary(
+            algo,
+            ppo_n_steps=ppo_n_steps,
+            ppo_batch_size=ppo_batch_size,
+            ppo_n_epochs=ppo_n_epochs,
+        )
         return PPO(
             "MlpPolicy",
-            learning_rate=3e-4,
-            n_steps=256,
-            batch_size=256,
-            gamma=0.99,
-            gae_lambda=0.95,
-            ent_coef=0.0,
-            clip_range=0.2,
-            policy_kwargs={"net_arch": {"pi": [256, 256], "vf": [256, 256]}},
+            **ppo_kwargs,
             **common_kwargs,
         )
     if algo == PG_ALGO_PPO_DISCRETE:
@@ -649,6 +865,68 @@ def _build_model(
     raise KeyError(f"Unknown policy-gradient algo: {algo}")
 
 
+def _model_hyperparameter_summary(
+    algo: str,
+    *,
+    ppo_n_steps: int | None = None,
+    ppo_batch_size: int | None = None,
+    ppo_n_epochs: int | None = None,
+) -> dict[str, Any]:
+    algo = str(algo)
+    if algo == PG_ALGO_PPO_CONTINUOUS:
+        hparams = {
+            "learning_rate": 3e-4,
+            "n_steps": 512,
+            "batch_size": 512,
+            "n_epochs": 6,
+            "gamma": 0.997,
+            "gae_lambda": 0.95,
+            "ent_coef": 0.001,
+            "clip_range": 0.2,
+            "target_kl": 0.04,
+            "policy_kwargs": {"net_arch": {"pi": [128, 128], "vf": [128, 128]}},
+        }
+        if ppo_n_steps is not None:
+            hparams["n_steps"] = int(max(1, ppo_n_steps))
+        if ppo_batch_size is not None:
+            hparams["batch_size"] = int(max(1, ppo_batch_size))
+        if ppo_n_epochs is not None:
+            hparams["n_epochs"] = int(max(1, ppo_n_epochs))
+        return hparams
+    if algo == PG_ALGO_PPO_DISCRETE:
+        return {
+            "learning_rate": 3e-4,
+            "n_steps": 256,
+            "batch_size": 256,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "ent_coef": 0.01,
+            "clip_range": 0.2,
+            "policy_kwargs": {"net_arch": {"pi": [256, 256], "vf": [256, 256]}},
+        }
+    if algo == PG_ALGO_TD3:
+        return {
+            "learning_rate": 3e-4,
+            "batch_size": 256,
+            "gamma": 0.99,
+            "tau": 0.005,
+            "train_freq": (1, "step"),
+            "gradient_steps": 1,
+            "policy_kwargs": {"net_arch": [256, 256]},
+        }
+    if algo == PG_ALGO_SAC:
+        return {
+            "learning_rate": 3e-4,
+            "batch_size": 256,
+            "gamma": 0.99,
+            "tau": 0.005,
+            "train_freq": (1, "step"),
+            "gradient_steps": 1,
+            "policy_kwargs": {"net_arch": [256, 256]},
+        }
+    raise KeyError(f"Unknown policy-gradient algo: {algo}")
+
+
 def train_policy_gradient_variant(
     *,
     algo: str,
@@ -664,44 +942,81 @@ def train_policy_gradient_variant(
     total_timesteps: int | None = None,
     parallel_envs: int | None = None,
     eval_every_episodes: int | None = None,
+    vec_env_type: str = "auto",
+    ppo_n_steps: int | None = None,
+    ppo_batch_size: int | None = None,
+    ppo_n_epochs: int | None = None,
+    ppo_device: str = "cpu",
+    train_reset_options_pool: list[dict[str, Any]] | None = None,
+    eval_reset_options_schedule: list[dict[str, Any]] | None = None,
 ) -> RunResult:
     require_sb3()
 
     algo = str(algo)
     dirs = mk_run_dirs(out_dir)
-    env_factory = build_policy_gradient_env_factory(
+    eval_env_factory = build_policy_gradient_env_factory(
         algo=algo,
         env_mode=env_mode,
         env_kwargs=env_kwargs,
         reward_variant=reward_variant,
         state_variant=state_variant,
     )
+    train_env_kwargs = dict(env_kwargs)
+    if train_reset_options_pool:
+        train_env_kwargs[PG_TRAIN_RESET_OPTIONS_POOL_KEY] = [dict(row) for row in train_reset_options_pool]
+    train_env_factory = build_policy_gradient_env_factory(
+        algo=algo,
+        env_mode=env_mode,
+        env_kwargs=train_env_kwargs,
+        reward_variant=reward_variant,
+        state_variant=state_variant,
+    )
     total_timesteps = int(total_timesteps_from_episodes(env_kwargs, total_episodes) if total_timesteps is None else total_timesteps)
     parallel_envs = int(_default_parallel_envs(algo) if parallel_envs is None else max(1, parallel_envs))
     eval_every_episodes = int(_default_eval_every_episodes(algo) if eval_every_episodes is None else max(1, eval_every_episodes))
-    probe_env = env_factory()
+    resolved_vec_env_type = _resolve_vec_env_type(vec_env_type, parallel_envs)
+    model_hyperparameters = _model_hyperparameter_summary(
+        algo,
+        ppo_n_steps=ppo_n_steps,
+        ppo_batch_size=ppo_batch_size,
+        ppo_n_epochs=ppo_n_epochs,
+    )
+    probe_env = eval_env_factory()
     action_levels = probe_env.action_levels.tolist()
     probe_env.close()
 
-    train_env = _build_vec_env(env_factory, parallel_envs=parallel_envs)
+    train_env = _build_vec_env(
+        train_env_factory,
+        parallel_envs=parallel_envs,
+        vec_env_type=vec_env_type,
+    )
+    actual_vec_env_type = str(getattr(train_env, "teleop_resolved_vec_env_type", resolved_vec_env_type))
     model = _build_model(
         algo=algo,
         env=train_env,
         tensorboard_log=dirs["tensorboard"],
         seed=seed,
         total_timesteps=total_timesteps,
+        ppo_n_steps=ppo_n_steps,
+        ppo_batch_size=ppo_batch_size,
+        ppo_n_epochs=ppo_n_epochs,
+        ppo_device=ppo_device,
     )
 
     callback = PolicyGradientMetricsCallback(
         total_episodes=total_episodes,
+        total_timesteps=total_timesteps,
         eval_every_episodes=eval_every_episodes,
         eval_episodes=max(1, min(cfg.DQN_EVAL_EPISODES, test_episodes)),
         eval_fn=lambda mdl, eval_eps, seed_offset: evaluate_policy_gradient(
             mdl,
-            env_factory,
+            eval_env_factory,
             n_episodes=eval_eps,
             seed_offset=seed_offset,
+            reset_options_schedule=eval_reset_options_schedule,
         ),
+        progress_label=label,
+        progress_update_timesteps=50,
     )
     model.learn(total_timesteps=total_timesteps, callback=callback)
     train_env.close()
@@ -754,9 +1069,10 @@ def train_policy_gradient_variant(
 
     eval_metrics, history = evaluate_policy_gradient(
         model,
-        env_factory,
+        eval_env_factory,
         n_episodes=test_episodes,
         seed_offset=20_000,
+        reset_options_schedule=eval_reset_options_schedule,
     )
     save_history_npz(history, Path(dirs["episodes"]) / "test.npz")
     save_policy_gradient_visuals(
@@ -811,14 +1127,23 @@ def train_policy_gradient_variant(
             "state_variant_description": str(state_variant.description),
             "state_spec": state_variant.metadata,
             "reward_config": asdict(reward_variant),
+            "model_hyperparameters": model_hyperparameters,
+            "model_device": str(ppo_device),
             "episode_duration": float(env_kwargs["episode_duration"]),
             "env_switch_time": float(env_kwargs["env_switch_time"]),
             "terminate_on_error": bool(env_kwargs["terminate_on_error"]),
             "enforce_stroke_limit": bool(env_kwargs.get("enforce_stroke_limit", True)),
             "stroke_limit_mode": str(env_kwargs.get("stroke_limit_mode", "terminate")),
             "reset_options": dict(env_kwargs.get("reset_options", {})),
+            "train_signal_count": int(len(train_reset_options_pool or [])),
+            "train_reset_options_pool": list(train_reset_options_pool or []),
+            "eval_signal_count": int(len(eval_reset_options_schedule or [])),
+            "eval_reset_options_schedule": list(eval_reset_options_schedule or []),
             "parallel_envs": int(parallel_envs),
             "eval_every_episodes": int(eval_every_episodes),
+            "vec_env_type": str(vec_env_type),
+            "resolved_vec_env_type": actual_vec_env_type,
+            "requested_resolved_vec_env_type": resolved_vec_env_type,
             "action_space_type": "discrete" if algo == PG_ALGO_PPO_DISCRETE else "continuous",
             "action_levels": action_levels,
         },

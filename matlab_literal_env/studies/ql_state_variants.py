@@ -156,6 +156,16 @@ def _relative_positions_velocities_forces_reduced6(obs: np.ndarray, info: dict[s
     )
 
 
+def _relative_positions_velocities_reduced4(obs: np.ndarray, info: dict[str, Any]) -> tuple[int, ...]:
+    del info
+    return (
+        int(np.digitize(_slave_centered_position(obs), cfg.SLAVE_POS_ERROR_BINS)),
+        int(np.digitize(_master_centered_position(obs), cfg.MASTER_POS_ERROR_BINS)),
+        int(np.digitize(_slave_velocity(obs), cfg.VEL_ERROR_BINS)),
+        int(np.digitize(_master_velocity(obs), cfg.VEL_ERROR_BINS)),
+    )
+
+
 @dataclass(frozen=True)
 class QLStateVariant:
     name: str
@@ -227,6 +237,13 @@ def build_ql_state_variants() -> list[QLStateVariant]:
             description="Centered slave/master positions, individual velocities, and force pair cues.",
             discretizer=_relative_positions_velocities_forces_reduced6,
             state_dims=(centered_slave_pos, centered_master_pos, velocity_bins, velocity_bins, force_bins, force_bins),
+        ),
+        QLStateVariant(
+            name="Q6_relative_posvel_reduced4",
+            feature_names=("x_s_centered", "x_m_centered", "v_s", "v_m"),
+            description="Centered slave/master positions and individual velocities only; force cues removed.",
+            discretizer=_relative_positions_velocities_reduced4,
+            state_dims=(centered_slave_pos, centered_master_pos, velocity_bins, velocity_bins),
         ),
     ]
 

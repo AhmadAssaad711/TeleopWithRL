@@ -179,6 +179,14 @@ def _absolute_posvel_forces(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray
     return _arr([x_m, x_s, v_m, v_s, f_e, f_h])
 
 
+def _absolute_posvel_only(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
+    x_m = float(info.get("x_m", 0.0)) / float(cfg.OBS_SCALE_POS)
+    x_s = float(info.get("x_s", 0.0)) / float(cfg.OBS_SCALE_POS)
+    v_s = float(obs[2])
+    v_m = float(obs[3])
+    return _arr([x_m, x_s, v_m, v_s])
+
+
 def _coupled_pressure_errors_plus_forces(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
     pressure_error_ch1 = float(obs[6] - obs[4])  # P_m1 - P_s1
     pressure_error_ch2 = float(obs[7] - obs[5])  # P_m2 - P_s2
@@ -621,6 +629,12 @@ def build_dqn_state_variants() -> list[DQNStateVariant]:
             ),
             description="Positions/velocities with cross-piston chamber pressure errors and direct force cues.",
             extractor=_coupled_pressure_errors_plus_forces,
+        ),
+        DQNStateVariant(
+            name="S11_absolute_posvel_only",
+            feature_names=("x_m", "x_s", "v_m", "v_s"),
+            description="Absolute master/slave positions and velocities only; force cues removed.",
+            extractor=_absolute_posvel_only,
         ),
     ]
 

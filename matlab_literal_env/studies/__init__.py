@@ -12,6 +12,8 @@ from .rewarding import (
     normalized_force_shape_reward_variant,
     normalized_legacy_transparency_reward_variant,
     reward_variant_from_name,
+    tracking_effort_no_force_transparency_reward_variant,
+    tracking_jerk_no_force_transparency_reward_variant,
 )
 
 __all__ = [
@@ -24,6 +26,8 @@ __all__ = [
     "normalized_force_shape_reward_variant",
     "normalized_legacy_transparency_reward_variant",
     "reward_variant_from_name",
+    "tracking_effort_no_force_transparency_reward_variant",
+    "tracking_jerk_no_force_transparency_reward_variant",
     "train_qlearning_variant",
     "evaluate_qlearning",
     "train_dqn_variant",

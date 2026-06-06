@@ -65,6 +65,35 @@ def equal_gradient_reward_variant() -> RewardVariant:
     )
 
 
+def tracking_effort_no_force_transparency_reward_variant() -> RewardVariant:
+    baseline = baseline_reward_variant()
+    return replace(
+        baseline,
+        name="track_effort_no_force_trans",
+        transparency_weight=0.0,
+        velocity_weight=0.0,
+        force_diff_weight=0.0,
+        jerk_weight=0.0,
+        use_jerk=False,
+    )
+
+
+def tracking_jerk_no_force_transparency_reward_variant() -> RewardVariant:
+    return RewardVariant(
+        name="track_jerk_no_force_trans",
+        tracking_weight=float(cfg.ALPHA_TRACKING),
+        transparency_weight=0.0,
+        jerk_weight=0.05,
+        use_jerk=True,
+        velocity_weight=0.0,
+        force_diff_weight=0.0,
+        effort_weight=0.0,
+        effort_scale_v=DEFAULT_ACTION_SCALE_V,
+        jerk_scale_v=DEFAULT_ACTION_DELTA_SCALE_V,
+        tracking_error_fail_penalty=1000.0,
+    )
+
+
 def normalized_force_shape_reward_variant() -> RewardVariant:
     return RewardVariant(
         name="norm_force_shape_v1",
@@ -108,6 +137,8 @@ def normalized_legacy_transparency_reward_variant() -> RewardVariant:
 def build_full_reward_variants() -> list[RewardVariant]:
     return [
         equal_gradient_reward_variant(),
+        tracking_effort_no_force_transparency_reward_variant(),
+        tracking_jerk_no_force_transparency_reward_variant(),
         normalized_force_shape_reward_variant(),
         normalized_legacy_transparency_reward_variant(),
         RewardVariant("r01_t40_tr06_j005", 40.0, 6.0, 0.05, True),
@@ -127,6 +158,8 @@ def build_full_reward_variants() -> list[RewardVariant]:
 def build_core_reward_variants() -> list[RewardVariant]:
     wanted = {
         "eqgrad_t40_tr40_nojerk",
+        "track_effort_no_force_trans",
+        "track_jerk_no_force_trans",
         "r11_t40_tr06_nojerk",
         "r09_t60_tr08_nojerk",
         "r10_t70_tr10_nojerk",
@@ -459,6 +492,17 @@ def reward_formula_from_context(
     context: Mapping[str, float],
     variant: RewardVariant,
 ) -> tuple[float, dict[str, float], dict[str, float]]:
+    formula_terms = tuple(
+        _normalize_formula_term(term, index)
+        for index, term in enumerate(variant.formula_terms, start=1)
+    )
+    return _reward_formula_from_terms(context, formula_terms)
+
+
+def _reward_formula_from_terms(
+    context: Mapping[str, float],
+    formula_terms: tuple[Mapping[str, Any], ...],
+) -> tuple[float, dict[str, float], dict[str, float]]:
     grouped = {
         "track": 0.0,
         "velocity": 0.0,
@@ -473,8 +517,7 @@ def reward_formula_from_context(
     custom_terms: dict[str, float] = {}
     reward = 0.0
 
-    for index, raw_term in enumerate(variant.formula_terms, start=1):
-        term = _normalize_formula_term(raw_term, index)
+    for term in formula_terms:
         source = str(term["source"])
         if source not in context:
             known = ", ".join(sorted(context.keys()))
@@ -570,15 +613,20 @@ class ReplicaRewardEnv:
         self.observation_space = base_env.observation_space
         self._prev_u_v = 0.0
         self._reward_history: dict[str, list[Any]] = {}
+        self._formula_terms = tuple(
+            _normalize_formula_term(term, index)
+            for index, term in enumerate(self.variant.formula_terms, start=1)
+        )
+        self._custom_reward_keys = tuple(
+            f"reward_term_{term['name']}"
+            for term in self._formula_terms
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.base_env, name)
 
     def _custom_term_keys(self) -> list[str]:
-        return [
-            f"reward_term_{_normalize_formula_term(term, index)['name']}"
-            for index, term in enumerate(self.variant.formula_terms, start=1)
-        ]
+        return list(self._custom_reward_keys)
 
     def reset(self, *args, **kwargs):
         obs, info = self.base_env.reset(*args, **kwargs)
@@ -706,7 +754,7 @@ class ReplicaRewardEnv:
         custom_terms: dict[str, float] = {}
         if self.variant.formula_terms:
             context = self._formula_context(history, info, action_delta=action_delta)
-            reward, grouped_terms, custom_terms = reward_formula_from_context(context, self.variant)
+            reward, grouped_terms, custom_terms = _reward_formula_from_terms(context, self._formula_terms)
             track_term = grouped_terms["track"]
             transparency_term = grouped_terms["transparency"]
             effort_term = grouped_terms["effort"]

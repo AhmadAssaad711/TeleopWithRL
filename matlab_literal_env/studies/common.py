@@ -80,6 +80,16 @@ def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(x, kernel, mode="same")
 
 
+def _moving_avg_seconds(t: np.ndarray, values: np.ndarray, seconds: float = 1.0) -> np.ndarray:
+    if values.size == 0:
+        return values
+    if t.size >= 2:
+        dt = float(np.nanmedian(np.diff(np.asarray(t, dtype=np.float64))))
+        if np.isfinite(dt) and dt > 0.0:
+            return moving_avg(values, max(1, int(round(float(seconds) / dt))))
+    return moving_avg(values, max(1, min(50, values.size)))
+
+
 def history_array(history: dict[str, Any], key: str, dtype=np.float64) -> np.ndarray:
     values = history.get(key, [])
     try:
@@ -258,6 +268,9 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     rewards = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
     transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    f_h = history_array(history, "F_h", dtype=np.float64)
+    f_e = history_array(history, "F_e", dtype=np.float64)
+    force_error = f_e - f_h if f_h.size and f_e.size else np.asarray([], dtype=np.float64)
     time_s = history_array(history, "time", dtype=np.float64)
     invalid = history_array(history, "invalid_state", dtype=np.float64)
 
@@ -273,9 +286,12 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     return {
         "mean_reward": float(np.sum(rewards)) if rewards.size else 0.0,
         "tracking_rmse_m": _rmse(pos_error),
+        "force_rmse_n": _rmse(force_error),
         "transparency_rmse_w": _rmse(transparency_error),
         "pre_switch_tracking_rmse_m": _rmse(pos_error, pre_mask),
         "post_switch_tracking_rmse_m": _rmse(pos_error, post_mask),
+        "pre_switch_force_rmse_n": _rmse(force_error, pre_mask),
+        "post_switch_force_rmse_n": _rmse(force_error, post_mask),
         "pre_switch_transparency_rmse_w": _rmse(transparency_error, pre_mask),
         "post_switch_transparency_rmse_w": _rmse(transparency_error, post_mask),
         "invalid_episode": float(np.any(invalid > 0.0)),
@@ -438,12 +454,12 @@ def plot_rollout_dashboard(history: dict[str, Any], out_path: str | Path, title:
 
     x_m = history_array(history, "x_m", dtype=np.float64) * 1000.0
     x_s = history_array(history, "x_s", dtype=np.float64) * 1000.0
+    v_m = history_array(history, "v_m", dtype=np.float64)
+    v_s = history_array(history, "v_s", dtype=np.float64)
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64) * 1000.0
     transparency_error = history_array(history, "transparency_error", dtype=np.float64)
-    u_v = history_array(history, "u_v", dtype=np.float64)
-    reward = history_array(history, "reward", dtype=np.float64)
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=True)
     axes[0].plot(t, x_m, lw=1.7, color="tab:blue", label="Master")
@@ -483,28 +499,470 @@ def plot_rollout_dashboard(history: dict[str, Any], out_path: str | Path, title:
         facecolor="white",
     )
 
-    action_line = axes[3].plot(t, u_v, lw=1.5, color="tab:cyan", label="Action voltage")[0]
-    twin2 = axes[3].twinx()
-    reward_line = twin2.plot(t, reward, lw=1.2, color="tab:gray", alpha=0.85, label="Reward")[0]
-    axes[3].set_ylabel("u_v [V]", color="tab:cyan")
-    twin2.set_ylabel("Reward", color="tab:gray")
-    axes[3].tick_params(axis="y", colors="tab:cyan")
-    twin2.tick_params(axis="y", colors="tab:gray")
-    axes[3].set_title("Action voltage (cyan) and reward (gray)")
+    axes[3].plot(t, v_m, lw=1.5, color="tab:blue", label="v_m")
+    axes[3].plot(t, v_s, lw=1.5, color="tab:orange", label="v_s")
+    axes[3].set_ylabel("Vel [m/s]")
+    axes[3].set_title("Master/slave velocity")
     axes[3].set_xlabel("Time [s]")
     axes[3].grid(True, alpha=0.3)
-    axes[3].legend(
-        [action_line, reward_line],
-        ["Action voltage", "Reward"],
-        loc="upper left",
-        framealpha=0.95,
-        facecolor="white",
-    )
+    axes[3].legend()
 
     for ax in axes:
         ax.axvline(env_switch_time, color="gray", lw=1.0, ls="--", alpha=0.8)
 
     plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title: str, env_switch_time: float) -> None:
+    t = history_array(history, "time", dtype=np.float64)
+    if t.size == 0:
+        return
+
+    pos_error_mm = history_array(history, "pos_error", dtype=np.float64) * 1000.0
+    transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    f_h = history_array(history, "F_h", dtype=np.float64)
+    f_e = history_array(history, "F_e", dtype=np.float64)
+    force_error = f_e - f_h
+    u_v = history_array(history, "u_v", dtype=np.float64)
+
+    t_all = history_array(history, "time_all", dtype=np.float64)
+    pos_error_all_mm = history_array(history, "pos_error_all", dtype=np.float64) * 1000.0
+    transparency_error_all = history_array(history, "transparency_error_all", dtype=np.float64)
+    f_h_all = history_array(history, "F_h_all", dtype=np.float64)
+    f_e_all = history_array(history, "F_e_all", dtype=np.float64)
+    force_error_all = f_e_all - f_h_all if f_h_all.size and f_e_all.size else np.asarray([], dtype=np.float64)
+    u_v_all = history_array(history, "u_v_all", dtype=np.float64)
+
+    fig, axes = plt.subplots(5, 1, figsize=(15, 17), sharex=True, constrained_layout=True)
+
+    def _plot_error_panel(
+        ax,
+        y: np.ndarray,
+        y_all: np.ndarray,
+        *,
+        ylabel: str,
+        label: str,
+        color: str,
+        reference: float | None = None,
+        reference_label: str = "",
+    ) -> None:
+        if t_all.size and y_all.size == t_all.size:
+            ax.scatter(t_all, y_all, s=4, color="0.65", alpha=0.08, linewidths=0, label="all eval samples")
+        ax.plot(t, y, lw=0.9, color=color, alpha=0.40, label=f"{label} mean")
+        ax.plot(t, _moving_avg_seconds(t, y, 1.0), lw=2.0, color=color, label=f"{label} 1 s smooth")
+        ax.axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
+        if reference is not None and reference > 0.0:
+            ax.axhline(reference, color=color, lw=0.9, ls="--", alpha=0.55)
+            ax.axhline(-reference, color=color, lw=0.9, ls="--", alpha=0.55)
+            if reference_label:
+                ax.text(
+                    0.01,
+                    0.86,
+                    reference_label,
+                    transform=ax.transAxes,
+                    color=color,
+                    fontsize=9,
+                    bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
+                )
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper right", framealpha=0.92)
+
+    _plot_error_panel(
+        axes[0],
+        pos_error_mm,
+        pos_error_all_mm,
+        ylabel="Track [mm]",
+        label="x_m - x_s",
+        color="tab:purple",
+        reference=2.0,
+        reference_label="tracking deadband: +/-2 mm",
+    )
+    axes[0].set_title(f"{title}: error diagnostics{_rollout_title_suffix(history)}")
+
+    _plot_error_panel(
+        axes[1],
+        force_error,
+        force_error_all,
+        ylabel="F_e - F_h [N]",
+        label="force mismatch",
+        color="tab:red",
+        reference=25.0,
+        reference_label="force reward scale: +/-25 N",
+    )
+
+    _plot_error_panel(
+        axes[2],
+        transparency_error,
+        transparency_error_all,
+        ylabel="Power err [W]",
+        label="F_e v_m - F_h v_s",
+        color="tab:brown",
+        reference=20.0,
+        reference_label="power reward scale: +/-20 W",
+    )
+
+    track_norm = np.maximum(np.abs(pos_error_mm / 1000.0) - 0.002, 0.0) / max(float(cfg.MAX_POSITION_ERROR), 1e-9)
+    force_norm = np.abs(force_error) / 25.0
+    transparency_norm = np.abs(transparency_error) / 20.0
+    axes[3].plot(t, _moving_avg_seconds(t, track_norm, 1.0), lw=2.0, color="tab:purple", label="tracking deadband / scale")
+    axes[3].plot(t, _moving_avg_seconds(t, force_norm, 1.0), lw=2.0, color="tab:red", label="|force mismatch| / 25 N")
+    axes[3].plot(t, _moving_avg_seconds(t, transparency_norm, 1.0), lw=2.0, color="tab:brown", label="|power error| / 20 W")
+    axes[3].set_ylabel("Normalized abs.")
+    axes[3].set_title("Smoothed normalized error magnitudes")
+    axes[3].grid(True, alpha=0.25)
+    axes[3].legend(loc="upper right", framealpha=0.92)
+
+    if t_all.size and u_v_all.size == t_all.size:
+        axes[4].scatter(t_all, u_v_all, s=4, color="0.65", alpha=0.08, linewidths=0, label="all eval samples")
+    axes[4].plot(t, u_v, lw=0.9, color="tab:cyan", alpha=0.40, label="u_v mean")
+    axes[4].plot(t, _moving_avg_seconds(t, u_v, 1.0), lw=2.0, color="tab:cyan", label="u_v 1 s smooth")
+    axes[4].axhline(5.0, color="tab:cyan", lw=0.9, ls="--", alpha=0.55)
+    axes[4].axhline(-5.0, color="tab:cyan", lw=0.9, ls="--", alpha=0.55)
+    axes[4].axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
+    axes[4].set_ylabel("u_v [V]")
+    axes[4].set_xlabel("Time [s]")
+    axes[4].set_title("Voltage command signal")
+    axes[4].grid(True, alpha=0.25)
+    axes[4].legend(loc="upper right", framealpha=0.92)
+
+    for ax in axes:
+        ax.axvline(env_switch_time, color="gray", lw=1.0, ls="--", alpha=0.8)
+
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_eval_signal_performance(history: dict[str, Any], out_path: str | Path, title: str) -> None:
+    episodes = history_array(history, "eval_episode", dtype=np.float64)
+    if episodes.size == 0:
+        return
+
+    tracking_mm = history_array(history, "eval_episode_tracking_rmse_m", dtype=np.float64) * 1000.0
+    force_rmse = history_array(history, "eval_episode_force_rmse_n", dtype=np.float64)
+    transparency_rmse = history_array(history, "eval_episode_transparency_rmse_w", dtype=np.float64)
+    rms_u_v = history_array(history, "eval_episode_rms_u_v", dtype=np.float64)
+    mean_abs_delta_u_v = history_array(history, "eval_episode_mean_abs_delta_u_v", dtype=np.float64)
+    saturation_fraction = history_array(history, "eval_episode_saturation_fraction", dtype=np.float64) * 100.0
+    episode_seconds = history_array(history, "eval_episode_seconds", dtype=np.float64)
+    completed = history_array(history, "eval_episode_completed", dtype=np.float64)
+    amp = history_array(history, "eval_signal_amp_n", dtype=np.float64)
+    bias = history_array(history, "eval_signal_bias_n", dtype=np.float64)
+    omega = history_array(history, "eval_signal_omega_rad_s", dtype=np.float64)
+    waveform = history_array(history, "eval_signal_waveform", dtype=object)
+
+    n = int(min(episodes.size, tracking_mm.size, force_rmse.size, transparency_rmse.size))
+    if n == 0:
+        return
+    episodes = episodes[:n]
+    tracking_mm = tracking_mm[:n]
+    force_rmse = force_rmse[:n]
+    transparency_rmse = transparency_rmse[:n]
+    rms_u_v = rms_u_v[:n] if rms_u_v.size >= n else np.full(n, np.nan)
+    mean_abs_delta_u_v = mean_abs_delta_u_v[:n] if mean_abs_delta_u_v.size >= n else np.full(n, np.nan)
+    saturation_fraction = saturation_fraction[:n] if saturation_fraction.size >= n else np.full(n, np.nan)
+    episode_seconds = episode_seconds[:n] if episode_seconds.size >= n else np.full(n, np.nan)
+    completed = completed[:n] if completed.size >= n else np.ones(n, dtype=np.float64)
+    amp = amp[:n] if amp.size >= n else np.full(n, np.nan)
+    bias = bias[:n] if bias.size >= n else np.full(n, np.nan)
+    omega = omega[:n] if omega.size >= n else np.zeros(n, dtype=np.float64)
+    waveform = waveform[:n] if waveform.size >= n else np.full(n, "signal", dtype=object)
+
+    fig, axes = plt.subplots(6, 1, figsize=(15, 20), sharex=True, constrained_layout=True)
+    cmap = "viridis"
+    markers = {
+        "sine": "o",
+        "multisine": "s",
+        "cosine": "P",
+        "ramp": "D",
+        "square": "^",
+    }
+
+    def _metric_scatter(ax, values: np.ndarray, ylabel: str, title_text: str):
+        scatter = None
+        for wave in sorted({str(item) for item in waveform}):
+            mask = np.asarray([str(item) == wave for item in waveform], dtype=bool)
+            marker = markers.get(wave, "o")
+            scatter = ax.scatter(
+                episodes[mask],
+                values[mask],
+                c=omega[mask],
+                cmap=cmap,
+                marker=marker,
+                s=42,
+                edgecolors="white",
+                linewidths=0.45,
+                label=wave,
+            )
+        failed = completed < 0.5
+        if np.any(failed):
+            ax.scatter(
+                episodes[failed],
+                values[failed],
+                marker="x",
+                s=74,
+                color="tab:red",
+                linewidths=1.6,
+                label="not completed",
+            )
+        ax.axhline(float(np.nanmedian(values)), color="0.25", lw=1.0, ls="--", alpha=0.65)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title_text)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper right", ncol=3, framealpha=0.92)
+        return scatter
+
+    sc = _metric_scatter(axes[0], tracking_mm, "Track RMSE [mm]", f"{title}: held-out signal performance")
+    _metric_scatter(axes[1], force_rmse, "Force RMSE [N]", "Force matching by evaluation signal")
+    _metric_scatter(axes[2], transparency_rmse, "Power RMSE [W]", "Transparency/power error by evaluation signal")
+
+    axes[3].scatter(
+        episodes,
+        rms_u_v,
+        c=omega,
+        cmap=cmap,
+        s=42,
+        edgecolors="white",
+        linewidths=0.45,
+        label="RMS u_v",
+    )
+    axes[3].plot(episodes, mean_abs_delta_u_v, lw=1.2, color="tab:orange", marker="s", ms=3.0, label="mean |delta u_v|")
+    twin_effort = axes[3].twinx()
+    twin_effort.plot(episodes, saturation_fraction, lw=1.2, color="tab:red", marker="^", ms=3.0, label="saturation")
+    axes[3].set_ylabel("Voltage [V]")
+    twin_effort.set_ylabel("Saturation [%]", color="tab:red")
+    twin_effort.tick_params(axis="y", colors="tab:red")
+    axes[3].set_title("Control effort by evaluation signal")
+    axes[3].grid(True, alpha=0.25)
+    lines, labels = axes[3].get_legend_handles_labels()
+    twin_lines, twin_labels = twin_effort.get_legend_handles_labels()
+    axes[3].legend(lines + twin_lines, labels + twin_labels, loc="upper right", framealpha=0.92)
+
+    axes[4].scatter(
+        episodes,
+        episode_seconds,
+        c=omega,
+        cmap=cmap,
+        s=42,
+        edgecolors="white",
+        linewidths=0.45,
+    )
+    axes[4].axhline(float(cfg.EPISODE_DURATION), color="0.25", lw=1.0, ls="--", alpha=0.65, label="default duration")
+    axes[4].set_ylabel("Episode [s]")
+    axes[4].set_title("Episode length / early termination check")
+    axes[4].grid(True, alpha=0.25)
+    axes[4].legend(loc="upper right", framealpha=0.92)
+
+    axes[5].plot(episodes, amp, lw=1.3, marker="o", ms=3.0, color="tab:blue", label="amp [N]")
+    axes[5].plot(episodes, bias, lw=1.3, marker="s", ms=3.0, color="tab:green", label="bias [N]")
+    twin = axes[5].twinx()
+    twin.plot(episodes, omega, lw=1.4, marker="^", ms=3.2, color="tab:purple", label="omega [rad/s]")
+    axes[5].set_ylabel("Amp / bias [N]")
+    twin.set_ylabel("Omega [rad/s]", color="tab:purple")
+    twin.tick_params(axis="y", colors="tab:purple")
+    axes[5].set_xlabel("Held-out evaluation episode")
+    axes[5].set_title("Input signal parameters")
+    axes[5].grid(True, alpha=0.25)
+    lines, labels = axes[5].get_legend_handles_labels()
+    twin_lines, twin_labels = twin.get_legend_handles_labels()
+    axes[5].legend(lines + twin_lines, labels + twin_labels, loc="upper right", framealpha=0.92)
+
+    if sc is not None:
+        cbar = fig.colorbar(sc, ax=axes[:5], shrink=0.92, pad=0.012)
+        cbar.set_label("omega [rad/s]")
+
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_control_effect_dashboard(history: dict[str, Any], out_path: str | Path, title: str, env_switch_time: float) -> None:
+    t = history_array(history, "time", dtype=np.float64)
+    u_v = history_array(history, "u_v", dtype=np.float64)
+    if t.size == 0 or u_v.size == 0:
+        return
+
+    n = int(min(t.size, u_v.size))
+    t = t[:n]
+    u_v = u_v[:n]
+    requested_u_v = history_array(history, "requested_u_v", dtype=np.float64)
+    requested_u_v = requested_u_v[:n] if requested_u_v.size >= n else np.asarray([], dtype=np.float64)
+    x_v = history_array(history, "x_v", dtype=np.float64)
+    x_v_dot = history_array(history, "x_v_dot", dtype=np.float64)
+    mdot_l1 = history_array(history, "mdot_L1", dtype=np.float64)
+    mdot_l2 = history_array(history, "mdot_L2", dtype=np.float64)
+    v_s = history_array(history, "v_s", dtype=np.float64)
+    f_h = history_array(history, "F_h", dtype=np.float64)
+    f_e = history_array(history, "F_e", dtype=np.float64)
+
+    t_all = history_array(history, "time_all", dtype=np.float64)
+    u_v_all = history_array(history, "u_v_all", dtype=np.float64)
+    f_h_all = history_array(history, "F_h_all", dtype=np.float64)
+    f_e_all = history_array(history, "F_e_all", dtype=np.float64)
+    x_v_all = history_array(history, "x_v_all", dtype=np.float64)
+
+    def _align(*arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+        width = min((arr.size for arr in arrays), default=0)
+        return tuple(arr[:width] for arr in arrays)
+
+    def _sample_indices(width: int, max_points: int = 15000) -> np.ndarray:
+        if width <= max_points:
+            return np.arange(width, dtype=np.int64)
+        return np.linspace(0, width - 1, max_points, dtype=np.int64)
+
+    def _time_gradient(values: np.ndarray) -> np.ndarray:
+        values, tt = _align(values, t)
+        if values.size < 2:
+            return np.zeros_like(values)
+        dt = np.diff(tt)
+        if np.any(np.abs(dt) < 1e-12):
+            return np.gradient(values)
+        return np.gradient(values, tt)
+
+    action_limit = float(np.max(np.abs(resolve_action_levels(None))))
+    force_error = f_e[: min(f_e.size, f_h.size)] - f_h[: min(f_e.size, f_h.size)] if f_h.size and f_e.size else np.asarray([], dtype=np.float64)
+    du_dt = _time_gradient(u_v)
+    rms_window = _moving_avg_seconds(t, u_v ** 2, 0.5)
+    rms_u_v = np.sqrt(np.maximum(rms_window, 0.0))
+    mean_abs_u = float(np.mean(np.abs(u_v))) if u_v.size else 0.0
+    rms_u = float(np.sqrt(np.mean(u_v ** 2))) if u_v.size else 0.0
+    sat_frac = float(np.mean(np.abs(u_v) >= 0.98 * action_limit)) if u_v.size else 0.0
+    integrate = getattr(np, "trapezoid", np.trapz)
+    effort_energy = float(integrate(u_v ** 2, t)) if u_v.size == t.size and u_v.size >= 2 else 0.0
+
+    fig, axes = plt.subplots(3, 2, figsize=(16, 13), constrained_layout=True)
+    axes = axes.reshape(3, 2)
+
+    if t_all.size and u_v_all.size:
+        tt, uu = _align(t_all, u_v_all)
+        idx = _sample_indices(tt.size)
+        axes[0, 0].scatter(tt[idx], uu[idx], s=4, color="0.65", alpha=0.10, linewidths=0, label="all eval samples")
+    if requested_u_v.size == t.size and not np.allclose(requested_u_v, u_v, equal_nan=True):
+        axes[0, 0].plot(t, requested_u_v, lw=1.0, color="tab:gray", alpha=0.75, label="requested u_v")
+    axes[0, 0].plot(t, u_v, lw=0.9, color="tab:cyan", alpha=0.35, label="applied u_v")
+    axes[0, 0].plot(t, _moving_avg_seconds(t, u_v, 0.5), lw=2.0, color="tab:cyan", label="applied 0.5 s smooth")
+    axes[0, 0].axhline(action_limit, color="tab:cyan", lw=0.9, ls="--", alpha=0.60)
+    axes[0, 0].axhline(-action_limit, color="tab:cyan", lw=0.9, ls="--", alpha=0.60)
+    axes[0, 0].axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
+    axes[0, 0].set_ylabel("u_v [V]")
+    axes[0, 0].set_title(f"{title}: control voltage command{_rollout_title_suffix(history)}")
+    axes[0, 0].grid(True, alpha=0.25)
+    axes[0, 0].legend(loc="upper right", framealpha=0.92)
+
+    axes[0, 1].plot(t, np.abs(u_v), lw=0.8, color="tab:blue", alpha=0.25, label="|u_v|")
+    axes[0, 1].plot(t, rms_u_v, lw=2.0, color="tab:blue", label="0.5 s RMS u_v")
+    twin = axes[0, 1].twinx()
+    twin.plot(t[: du_dt.size], _moving_avg_seconds(t[: du_dt.size], np.abs(du_dt), 0.5), lw=1.7, color="tab:orange", label="0.5 s mean |du_v/dt|")
+    axes[0, 1].set_ylabel("Voltage [V]")
+    twin.set_ylabel("|du_v/dt| [V/s]", color="tab:orange")
+    twin.tick_params(axis="y", colors="tab:orange")
+    axes[0, 1].set_title("Control effort and activity")
+    axes[0, 1].grid(True, alpha=0.25)
+    axes[0, 1].text(
+        0.02,
+        0.95,
+        f"mean |u_v| = {mean_abs_u:.2f} V\nRMS u_v = {rms_u:.2f} V\nint u_v^2 dt = {effort_energy:.1f} V^2 s\nsat = {100.0 * sat_frac:.1f}%",
+        transform=axes[0, 1].transAxes,
+        va="top",
+        fontsize=9,
+        bbox={"facecolor": "white", "alpha": 0.82, "edgecolor": "0.85"},
+    )
+    lines, labels = axes[0, 1].get_legend_handles_labels()
+    twin_lines, twin_labels = twin.get_legend_handles_labels()
+    axes[0, 1].legend(lines + twin_lines, labels + twin_labels, loc="upper right", framealpha=0.92)
+
+    if x_v.size:
+        xx, tt = _align(x_v, t)
+        axes[1, 0].plot(tt, xx, lw=1.7, color="tab:purple", label="x_v")
+    if x_v_dot.size:
+        vv, tt = _align(x_v_dot, t)
+        spool_twin = axes[1, 0].twinx()
+        spool_twin.plot(tt, vv, lw=1.2, color="tab:pink", alpha=0.85, label="x_v_dot")
+        spool_twin.set_ylabel("x_v_dot", color="tab:pink")
+        spool_twin.tick_params(axis="y", colors="tab:pink")
+        twin_lines, twin_labels = spool_twin.get_legend_handles_labels()
+    else:
+        twin_lines, twin_labels = [], []
+    axes[1, 0].set_ylabel("x_v")
+    axes[1, 0].set_title("Valve/spool response")
+    axes[1, 0].grid(True, alpha=0.25)
+    lines, labels = axes[1, 0].get_legend_handles_labels()
+    axes[1, 0].legend(lines + twin_lines, labels + twin_labels, loc="upper right", framealpha=0.92)
+
+    if mdot_l1.size or mdot_l2.size:
+        if mdot_l1.size:
+            mm, tt = _align(mdot_l1, t)
+            axes[1, 1].plot(tt, mm, lw=1.4, color="tab:green", label="mdot_L1")
+        if mdot_l2.size:
+            mm, tt = _align(mdot_l2, t)
+            axes[1, 1].plot(tt, mm, lw=1.4, color="tab:red", label="mdot_L2")
+        axes[1, 1].set_ylabel("Flow")
+        axes[1, 1].set_title("Hydraulic flow response")
+    else:
+        vv, tt = _align(v_s, t)
+        axes[1, 1].plot(tt, vv, lw=1.5, color="tab:orange", label="v_s")
+        axes[1, 1].set_ylabel("v_s [m/s]")
+        axes[1, 1].set_title("Slave velocity response")
+    axes[1, 1].grid(True, alpha=0.25)
+    axes[1, 1].legend(loc="upper right", framealpha=0.92)
+
+    if force_error.size:
+        tt = t[: force_error.size]
+        axes[2, 0].plot(tt, force_error, lw=0.9, color="tab:red", alpha=0.35, label="F_e - F_h")
+        axes[2, 0].plot(tt, _moving_avg_seconds(tt, force_error, 0.5), lw=2.0, color="tab:red", label="force mismatch smooth")
+    force_twin = axes[2, 0].twinx()
+    force_twin.plot(t, _moving_avg_seconds(t, u_v, 0.5), lw=1.5, color="tab:cyan", label="u_v smooth")
+    axes[2, 0].axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
+    axes[2, 0].set_ylabel("F_e - F_h [N]")
+    force_twin.set_ylabel("u_v [V]", color="tab:cyan")
+    force_twin.tick_params(axis="y", colors="tab:cyan")
+    axes[2, 0].set_title("Voltage timing against force mismatch")
+    axes[2, 0].grid(True, alpha=0.25)
+    lines, labels = axes[2, 0].get_legend_handles_labels()
+    twin_lines, twin_labels = force_twin.get_legend_handles_labels()
+    axes[2, 0].legend(lines + twin_lines, labels + twin_labels, loc="upper right", framealpha=0.92)
+
+    u_scatter = u_v_all if u_v_all.size else u_v
+    if f_h_all.size and f_e_all.size:
+        f_scatter = f_e_all[: min(f_e_all.size, f_h_all.size)] - f_h_all[: min(f_e_all.size, f_h_all.size)]
+    else:
+        f_scatter = force_error
+    color_values = x_v_all if x_v_all.size else x_v
+    u_scatter, f_scatter, color_values = _align(u_scatter, f_scatter, color_values)
+    if u_scatter.size and f_scatter.size:
+        idx = _sample_indices(u_scatter.size)
+        sc = axes[2, 1].scatter(
+            u_scatter[idx],
+            f_scatter[idx],
+            c=color_values[idx],
+            cmap="coolwarm",
+            s=8,
+            alpha=0.28,
+            linewidths=0,
+        )
+        bins = np.linspace(-action_limit, action_limit, 21)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        medians = []
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            mask = (u_scatter >= lo) & (u_scatter < hi)
+            medians.append(float(np.nanmedian(f_scatter[mask])) if np.any(mask) else np.nan)
+        axes[2, 1].plot(centers, medians, color="black", lw=2.0, label="binned median")
+        cbar = fig.colorbar(sc, ax=axes[2, 1], shrink=0.88, pad=0.012)
+        cbar.set_label("x_v")
+    axes[2, 1].axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
+    axes[2, 1].axvline(0.0, color="0.15", lw=0.9, alpha=0.75)
+    axes[2, 1].set_xlabel("u_v [V]")
+    axes[2, 1].set_ylabel("F_e - F_h [N]")
+    axes[2, 1].set_title("Voltage-to-force relation")
+    axes[2, 1].grid(True, alpha=0.25)
+    axes[2, 1].legend(loc="upper right", framealpha=0.92)
+
+    for ax in axes[:, 0]:
+        ax.set_xlabel("Time [s]")
+    for ax in [axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1], axes[2, 0]]:
+        ax.axvline(env_switch_time, color="gray", lw=1.0, ls="--", alpha=0.8)
+
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

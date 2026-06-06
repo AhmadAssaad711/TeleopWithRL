@@ -362,54 +362,85 @@ def simuoriginal_derivatives(
     F_h_fn = F_h_fn or (lambda tau: saved_force_input(tau, profile))
     u_fn = u_fn or (lambda tau: saved_control_input(tau, profile))
 
-    s = SimuOriginalState.from_array(y)
-    obs = _top_level_observables(t, y, parms, profile, F_h_fn, u_fn)
-    F_h = obs["F_h"]
-    u = obs["u"]
-    K_e = obs["K_e"]
-    B_e = obs["B_e"]
-    mm1_dot = obs["mm1_dot"]
-    mm2_dot = obs["mm2_dot"]
+    Pm1 = float(y[0])
+    Pm2 = float(y[1])
+    xm_dot = float(y[2])
+    xm = float(y[3])
+    Ps1 = float(y[4])
+    Ps2 = float(y[5])
+    xs_dot = float(y[6])
+    xs = float(y[7])
+    mL1_dot = float(y[8])
+    mL2_dot = float(y[9])
+    x_v = float(y[10])
+    x_v_dot = float(y[11])
+
+    F_h = F_h_fn(t)
+    u = u_fn(t)
+    K_e, B_e = saved_environment(t, profile)
+
+    if profile.valve_branch_1_pressure_source == "atm":
+        ref_p1 = parms.P_atm
+    elif profile.valve_branch_1_pressure_source == "chamber":
+        ref_p1 = Pm1
+    else:
+        raise ValueError(f"Unsupported valve pressure source: {profile.valve_branch_1_pressure_source}")
+    if profile.valve_branch_2_pressure_source == "atm":
+        ref_p2 = parms.P_atm
+    elif profile.valve_branch_2_pressure_source == "chamber":
+        ref_p2 = Pm2
+    else:
+        raise ValueError(f"Unsupported valve pressure source: {profile.valve_branch_2_pressure_source}")
+    valve_constant_1 = _valve_branch_constant(ref_p1, parms)
+    valve_constant_2 = _valve_branch_constant(ref_p2, parms)
+    mv1_dot = valve_constant_1 * x_v
+    mv2_dot = -valve_constant_2 * x_v
+    mm1_dot = mv1_dot - mL1_dot
+    mm2_dot = mv2_dot - mL2_dot
+
+    A_t = math.pi * parms.D_t**2 / 4.0
+    tube_damping = 32.0 * parms.mui / (parms.rho0 * parms.D_t**2)
+    tube_compliance = A_t * parms.L_t
 
     # Valve second-order transfer function: Xv/U = K_v * omega_v^2 / (s^2 + 2*zeta_v*omega_v*s + omega_v^2)
     x_v_ddot = (
         parms.K_v * parms.omega_v**2 * u
-        - 2.0 * parms.zeta_v * parms.omega_v * s.x_v_dot
-        - parms.omega_v**2 * s.x_v
+        - 2.0 * parms.zeta_v * parms.omega_v * x_v_dot
+        - parms.omega_v**2 * x_v
     )
 
     # Tube dynamics.
     mL1_ddot = (
-        (parms.A_t / parms.L_t) * (s.Pm1 - s.Ps2)
-        - parms.tube_damping * s.mL1_dot
+        (A_t / parms.L_t) * (Pm1 - Ps2)
+        - tube_damping * mL1_dot
     )
     mL2_ddot = (
-        (parms.A_t / parms.L_t) * (s.Pm2 - s.Ps1)
-        - parms.tube_damping * s.mL2_dot
+        (A_t / parms.L_t) * (Pm2 - Ps1)
+        - tube_damping * mL2_dot
     )
 
     # Master cylinder.
-    V_m1 = parms.V_md + parms.A_p * s.xm
-    V_m2 = parms.V_md + parms.A_p * (parms.l_cyl - s.xm)
-    Pm1_dot = (parms.R * parms.T * mm1_dot - parms.A_p * s.Pm1 * s.xm_dot) / V_m1
-    Pm2_dot = (parms.R * parms.T * mm2_dot + parms.A_p * s.Pm2 * s.xm_dot) / V_m2
+    V_m1 = parms.V_md + parms.A_p * xm
+    V_m2 = parms.V_md + parms.A_p * (parms.l_cyl - xm)
+    Pm1_dot = (parms.R * parms.T * mm1_dot - parms.A_p * Pm1 * xm_dot) / V_m1
+    Pm2_dot = (parms.R * parms.T * mm2_dot + parms.A_p * Pm2 * xm_dot) / V_m2
     xm_ddot = (
-        -parms.k_h * s.xm
-        + parms.A_p * (s.Pm1 - s.Pm2)
+        -parms.k_h * xm
+        + parms.A_p * (Pm1 - Pm2)
         + F_h
-        - (parms.B_h + parms.beta) * s.xm_dot
+        - (parms.B_h + parms.beta) * xm_dot
     ) / parms.m_p
 
     # Slave cylinder. The Simulink wiring makes the tube-compliance term appear
     # on both pressure-derivative paths, so we solve the equivalent explicit form.
-    V_s1 = parms.V_md + parms.A_p * s.xs + parms.tube_compliance
-    V_s2 = parms.V_sd + parms.A_p * (parms.l_cyl - s.xs) + parms.tube_compliance
-    Ps1_dot = (parms.R * parms.T * s.mL2_dot - parms.A_p * s.Ps1 * s.xs_dot) / V_s1
-    Ps2_dot = (parms.R * parms.T * s.mL1_dot + parms.A_p * s.Ps2 * s.xs_dot) / V_s2
+    V_s1 = parms.V_md + parms.A_p * xs + tube_compliance
+    V_s2 = parms.V_sd + parms.A_p * (parms.l_cyl - xs) + tube_compliance
+    Ps1_dot = (parms.R * parms.T * mL2_dot - parms.A_p * Ps1 * xs_dot) / V_s1
+    Ps2_dot = (parms.R * parms.T * mL1_dot + parms.A_p * Ps2 * xs_dot) / V_s2
     xs_ddot = (
-        -K_e * s.xs
-        + parms.A_p * (s.Ps1 - s.Ps2)
-        - (B_e + parms.beta) * s.xs_dot
+        -K_e * xs
+        + parms.A_p * (Ps1 - Ps2)
+        - (B_e + parms.beta) * xs_dot
     ) / parms.m_p
 
     return np.array(
@@ -417,14 +448,14 @@ def simuoriginal_derivatives(
             Pm1_dot,
             Pm2_dot,
             xm_ddot,
-            s.xm_dot,
+            xm_dot,
             Ps1_dot,
             Ps2_dot,
             xs_ddot,
-            s.xs_dot,
+            xs_dot,
             mL1_ddot,
             mL2_ddot,
-            s.x_v_dot,
+            x_v_dot,
             x_v_ddot,
         ],
         dtype=float,
