@@ -248,7 +248,7 @@ def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]
     scenarios.extend(
         [
             _scenario(base, name="signal_sine", group="human_force_signal_type", force_waveform="sine"),
-            _scenario(base, name="signal_pulse", group="human_force_signal_type", force_waveform="pulse"),
+            _scenario(base, name="signal_pulse", group="human_force_signal_type", force_waveform="square"),
             _scenario(base, name="signal_ramp", group="human_force_signal_type", force_waveform="ramp"),
             _scenario(
                 base,
