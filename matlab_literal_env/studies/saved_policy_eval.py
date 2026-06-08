@@ -23,6 +23,7 @@ from .common import (
     resolve_action_levels,
     save_json,
     scenario_plan,
+    transparency_ratio_array,
 )
 from .dqn import build_dqn_env_factory
 from .dqn_state_variants import get_dqn_state_variant
@@ -74,7 +75,7 @@ def _build_eval_context(summary: dict[str, Any]):
 def _episode_metrics(history: dict[str, Any], episode_policy_rows: list[dict[str, Any]]) -> dict[str, float]:
     reward = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
-    transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    transparency_ratio = transparency_ratio_array(history)
     u_v = history_array(history, "u_v", dtype=np.float64)
     q_gap_arr = np.asarray([row["q_gap"] for row in episode_policy_rows], dtype=np.float64)
     max_q = np.asarray([row["max_q"] for row in episode_policy_rows], dtype=np.float64)
@@ -82,7 +83,11 @@ def _episode_metrics(history: dict[str, Any], episode_policy_rows: list[dict[str
     return {
         "episode_return": float(reward.sum()) if reward.size else 0.0,
         "tracking_rmse_mm": float(np.sqrt(np.mean(pos_error ** 2)) * 1000.0) if pos_error.size else 0.0,
-        "transparency_rmse_w": float(np.sqrt(np.mean(transparency_error ** 2))) if transparency_error.size else 0.0,
+        "transparency_rmse_w": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
+        "transparency_ratio_mean": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
+        "transparency_ratio_error_rmse": (
+            float(np.sqrt(np.mean((transparency_ratio - 1.0) ** 2))) if transparency_ratio.size else 0.0
+        ),
         "mean_abs_u_v": float(np.mean(np.abs(u_v))) if u_v.size else 0.0,
         "mean_q_gap": float(np.mean(q_gap_arr)) if q_gap_arr.size else 0.0,
         "mean_max_q": float(np.mean(max_q)) if max_q.size else 0.0,
@@ -145,7 +150,8 @@ def evaluate_saved_policy(
                 "u_v": float(action_levels[int(action)]),
                 "reward": float(reward),
                 "pos_error": float(next_info["x_m"] - next_info["x_s"]),
-                "transparency_error": float((next_info["F_e"] * env.state[env.IX_VM]) - (next_info["F_h"] * env.state[env.IX_VS])),
+                "transparency_ratio": float(next_info.get("transparency_ratio", 0.0)),
+                "transparency_error": float(next_info.get("transparency_error", 0.0)),
                 "chosen_q": float(q_values[int(action)]),
                 "max_q": float(np.max(q_values)),
                 "q_gap": q_gap(q_values),

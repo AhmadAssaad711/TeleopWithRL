@@ -98,6 +98,26 @@ def history_array(history: dict[str, Any], key: str, dtype=np.float64) -> np.nda
         return np.asarray(values, dtype=object)
 
 
+def transparency_ratio_array(history: dict[str, Any], suffix: str = "") -> np.ndarray:
+    ratio = history_array(history, f"transparency_ratio{suffix}", dtype=np.float64)
+    if ratio.size:
+        return ratio
+
+    x_m = history_array(history, f"x_m{suffix}", dtype=np.float64)
+    x_s = history_array(history, f"x_s{suffix}", dtype=np.float64)
+    n = min(x_m.size, x_s.size)
+    if n == 0:
+        return np.asarray([], dtype=np.float64)
+    x_m = x_m[:n]
+    x_s = x_s[:n]
+    eps = 1e-9
+    denom = np.where(np.abs(x_s) >= eps, x_s, np.where(x_s >= 0.0, eps, -eps))
+    computed = x_m / denom
+    matched_zero = (np.abs(x_s) < eps) & (np.abs(x_m - x_s) < eps)
+    computed[matched_zero] = 1.0
+    return computed.astype(np.float64, copy=False)
+
+
 def json_default(value: Any):
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -267,7 +287,8 @@ def aggregate_episode_histories(histories: list[dict[str, Any]]) -> dict[str, An
 def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str, float]:
     rewards = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
-    transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    transparency_ratio = transparency_ratio_array(history)
+    transparency_error = transparency_ratio - 1.0
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     force_error = f_e - f_h if f_h.size and f_e.size else np.asarray([], dtype=np.float64)
@@ -281,19 +302,32 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
             values = values[mask]
         return float(np.sqrt(np.mean(values ** 2))) if values.size else 0.0
 
+    def _mean(values: np.ndarray, mask: np.ndarray | None = None) -> float:
+        if values.size == 0:
+            return 0.0
+        if mask is not None:
+            values = values[mask]
+        return float(np.mean(values)) if values.size else 0.0
+
     pre_mask = time_s < float(env_switch_time)
     post_mask = time_s >= float(env_switch_time)
+    transparency_ratio_mean = _mean(transparency_ratio)
     return {
         "mean_reward": float(np.sum(rewards)) if rewards.size else 0.0,
         "tracking_rmse_m": _rmse(pos_error),
         "force_rmse_n": _rmse(force_error),
-        "transparency_rmse_w": _rmse(transparency_error),
+        "transparency_rmse_w": transparency_ratio_mean,
+        "transparency_ratio_mean": transparency_ratio_mean,
+        "transparency_ratio_rmse": _rmse(transparency_ratio),
+        "transparency_ratio_error_rmse": _rmse(transparency_error),
         "pre_switch_tracking_rmse_m": _rmse(pos_error, pre_mask),
         "post_switch_tracking_rmse_m": _rmse(pos_error, post_mask),
         "pre_switch_force_rmse_n": _rmse(force_error, pre_mask),
         "post_switch_force_rmse_n": _rmse(force_error, post_mask),
-        "pre_switch_transparency_rmse_w": _rmse(transparency_error, pre_mask),
-        "post_switch_transparency_rmse_w": _rmse(transparency_error, post_mask),
+        "pre_switch_transparency_rmse_w": _mean(transparency_ratio, pre_mask),
+        "post_switch_transparency_rmse_w": _mean(transparency_ratio, post_mask),
+        "pre_switch_transparency_ratio_mean": _mean(transparency_ratio, pre_mask),
+        "post_switch_transparency_ratio_mean": _mean(transparency_ratio, post_mask),
         "invalid_episode": float(np.any(invalid > 0.0)),
     }
 
@@ -383,8 +417,8 @@ def save_training_plot(
             ms=3.5,
             color="black",
         )
-    axes[2].set_ylabel("Transp [W]")
-    axes[2].set_title(f"{title}: transparency RMSE")
+    axes[2].set_ylabel("Transp ratio")
+    axes[2].set_title(f"{title}: transparency ratio")
     axes[2].grid(True, alpha=0.3)
     axes[2].set_xlabel("Episode")
 
@@ -459,7 +493,7 @@ def plot_rollout_dashboard(history: dict[str, Any], out_path: str | Path, title:
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64) * 1000.0
-    transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    transparency_ratio = transparency_ratio_array(history)
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=True)
     axes[0].plot(t, x_m, lw=1.7, color="tab:blue", label="Master")
@@ -479,21 +513,21 @@ def plot_rollout_dashboard(history: dict[str, Any], out_path: str | Path, title:
     twin = axes[2].twinx()
     transp_line = twin.plot(
         t,
-        transparency_error,
+        transparency_ratio,
         lw=1.2,
         color="tab:brown",
         alpha=0.85,
-        label="Transparency error",
+        label="Transparency ratio",
     )[0]
     axes[2].set_ylabel("Track [mm]", color="tab:purple")
-    twin.set_ylabel("Transp [W]", color="tab:brown")
+    twin.set_ylabel("x_m / x_s", color="tab:brown")
     axes[2].tick_params(axis="y", colors="tab:purple")
     twin.tick_params(axis="y", colors="tab:brown")
-    axes[2].set_title("Tracking error (purple) and transparency error (brown)")
+    axes[2].set_title("Tracking error (purple) and transparency ratio (brown)")
     axes[2].grid(True, alpha=0.3)
     axes[2].legend(
         [track_line, transp_line],
-        ["Tracking error", "Transparency error"],
+        ["Tracking error", "Transparency ratio"],
         loc="upper left",
         framealpha=0.95,
         facecolor="white",
@@ -521,7 +555,7 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
         return
 
     pos_error_mm = history_array(history, "pos_error", dtype=np.float64) * 1000.0
-    transparency_error = history_array(history, "transparency_error", dtype=np.float64)
+    transparency_ratio = transparency_ratio_array(history)
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     force_error = f_e - f_h
@@ -529,7 +563,7 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
 
     t_all = history_array(history, "time_all", dtype=np.float64)
     pos_error_all_mm = history_array(history, "pos_error_all", dtype=np.float64) * 1000.0
-    transparency_error_all = history_array(history, "transparency_error_all", dtype=np.float64)
+    transparency_ratio_all = transparency_ratio_array(history, suffix="_all")
     f_h_all = history_array(history, "F_h_all", dtype=np.float64)
     f_e_all = history_array(history, "F_e_all", dtype=np.float64)
     force_error_all = f_e_all - f_h_all if f_h_all.size and f_e_all.size else np.asarray([], dtype=np.float64)
@@ -547,6 +581,7 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
         color: str,
         reference: float | None = None,
         reference_label: str = "",
+        symmetric_reference: bool = True,
     ) -> None:
         if t_all.size and y_all.size == t_all.size:
             ax.scatter(t_all, y_all, s=4, color="0.65", alpha=0.08, linewidths=0, label="all eval samples")
@@ -555,7 +590,8 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
         ax.axhline(0.0, color="0.15", lw=0.9, alpha=0.75)
         if reference is not None and reference > 0.0:
             ax.axhline(reference, color=color, lw=0.9, ls="--", alpha=0.55)
-            ax.axhline(-reference, color=color, lw=0.9, ls="--", alpha=0.55)
+            if symmetric_reference:
+                ax.axhline(-reference, color=color, lw=0.9, ls="--", alpha=0.55)
             if reference_label:
                 ax.text(
                     0.01,
@@ -595,21 +631,22 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
 
     _plot_error_panel(
         axes[2],
-        transparency_error,
-        transparency_error_all,
-        ylabel="Power err [W]",
-        label="F_e v_m - F_h v_s",
+        transparency_ratio,
+        transparency_ratio_all,
+        ylabel="x_m / x_s",
+        label="transparency ratio",
         color="tab:brown",
-        reference=20.0,
-        reference_label="power reward scale: +/-20 W",
+        reference=1.0,
+        reference_label="ideal transparency ratio: 1",
+        symmetric_reference=False,
     )
 
     track_norm = np.maximum(np.abs(pos_error_mm / 1000.0) - 0.002, 0.0) / max(float(cfg.MAX_POSITION_ERROR), 1e-9)
     force_norm = np.abs(force_error) / 25.0
-    transparency_norm = np.abs(transparency_error) / 20.0
+    transparency_norm = np.abs(transparency_ratio - 1.0)
     axes[3].plot(t, _moving_avg_seconds(t, track_norm, 1.0), lw=2.0, color="tab:purple", label="tracking deadband / scale")
     axes[3].plot(t, _moving_avg_seconds(t, force_norm, 1.0), lw=2.0, color="tab:red", label="|force mismatch| / 25 N")
-    axes[3].plot(t, _moving_avg_seconds(t, transparency_norm, 1.0), lw=2.0, color="tab:brown", label="|power error| / 20 W")
+    axes[3].plot(t, _moving_avg_seconds(t, transparency_norm, 1.0), lw=2.0, color="tab:brown", label="|x_m / x_s - 1|")
     axes[3].set_ylabel("Normalized abs.")
     axes[3].set_title("Smoothed normalized error magnitudes")
     axes[3].grid(True, alpha=0.25)
@@ -716,7 +753,7 @@ def plot_eval_signal_performance(history: dict[str, Any], out_path: str | Path, 
 
     sc = _metric_scatter(axes[0], tracking_mm, "Track RMSE [mm]", f"{title}: held-out signal performance")
     _metric_scatter(axes[1], force_rmse, "Force RMSE [N]", "Force matching by evaluation signal")
-    _metric_scatter(axes[2], transparency_rmse, "Power RMSE [W]", "Transparency/power error by evaluation signal")
+    _metric_scatter(axes[2], transparency_rmse, "Transp ratio", "Transparency ratio by evaluation signal")
 
     axes[3].scatter(
         episodes,
@@ -1323,7 +1360,7 @@ def plot_episode_metrics(rows: list[dict[str, Any]], out_path: Path) -> None:
     axes[0, 1].plot(episodes, tracking, marker="o", lw=1.5, color="tab:orange")
     axes[0, 1].set_title("Tracking RMSE")
     axes[1, 0].plot(episodes, transparency, marker="o", lw=1.5, color="tab:green")
-    axes[1, 0].set_title("Transparency RMSE")
+    axes[1, 0].set_title("Transparency ratio")
     axes[1, 1].plot(episodes, q_gap_arr, marker="o", lw=1.5, color="tab:red")
     axes[1, 1].set_title("Mean policy Q-gap")
     for ax in axes.ravel():
@@ -1331,7 +1368,7 @@ def plot_episode_metrics(rows: list[dict[str, Any]], out_path: Path) -> None:
         ax.grid(True, alpha=0.25)
     axes[0, 0].set_ylabel("Return")
     axes[0, 1].set_ylabel("RMSE [mm]")
-    axes[1, 0].set_ylabel("RMSE [W]")
+    axes[1, 0].set_ylabel("Transp ratio")
     axes[1, 1].set_ylabel("Q-gap")
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -1339,7 +1376,7 @@ def plot_episode_metrics(rows: list[dict[str, Any]], out_path: Path) -> None:
 
 
 def plot_summary_bars(summary: dict[str, Any], out_path: Path) -> None:
-    labels = ["Return", "Track RMSE [mm]", "Transp RMSE [W]", "Mean |u_v| [V]", "Mean Q-gap"]
+    labels = ["Return", "Track RMSE [mm]", "Transp ratio", "Mean |u_v| [V]", "Mean Q-gap"]
     values = [summary["mean_return"], summary["mean_tracking_rmse_mm"], summary["mean_transparency_rmse_w"], summary["mean_abs_u_v"], summary["mean_q_gap"]]
     fig, ax = plt.subplots(figsize=(11, 5))
     bars = ax.bar(labels, values, color=["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple"])
@@ -1429,7 +1466,7 @@ def plot_input_signal_dashboard(policy_rows: list[dict[str, Any]], episode_rows:
         ax.axvline(env_switch_time, color="0.35", ls="--", lw=1.0, alpha=0.7)
         ax.set_title(
             f"{scenario_name} | track {episode_row['tracking_rmse_mm']:.2f} mm | "
-            f"transp {episode_row['transparency_rmse_w']:.3f} W"
+            f"transp {episode_row['transparency_rmse_w']:.3f}"
         )
         ax.set_ylabel("Force [N]")
         ax.grid(True, alpha=0.25)
@@ -1458,8 +1495,8 @@ def plot_scenario_dashboard(rows: list[dict[str, Any]], out_path: Path) -> None:
     axes[0, 0].set_title("Tracking RMSE by scenario")
     axes[0, 0].set_ylabel("RMSE [mm]")
     axes[0, 1].bar(x, transparency, color="tab:green")
-    axes[0, 1].set_title("Transparency RMSE by scenario")
-    axes[0, 1].set_ylabel("RMSE [W]")
+    axes[0, 1].set_title("Transparency ratio by scenario")
+    axes[0, 1].set_ylabel("Transp ratio")
     axes[1, 0].bar(x, q_gap_arr, color="tab:purple")
     axes[1, 0].set_title("Mean Q-gap by scenario")
     axes[1, 0].set_ylabel("Q-gap")

@@ -258,7 +258,7 @@ def train_qlearning_variant(
             print(
                 f"[q_learning] {label} | ep {step}/{total_episodes} | "
                 f"return={ep_return:.2f} | track={ep_track[ep]:.4f} m | "
-                f"transp={ep_transp[ep]:.4f} W | eps={agent.epsilon:.4f} | "
+                f"transp={ep_transp[ep]:.4f} | eps={agent.epsilon:.4f} | "
                 f"states={agent.discovered_states()} | elapsed={elapsed_min:.1f} min",
                 flush=True,
             )

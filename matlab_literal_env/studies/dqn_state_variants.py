@@ -350,9 +350,9 @@ _CUSTOM_STATE_FEATURES: dict[str, StateFeatureSpec] = {
     ),
     "transparency_error": StateFeatureSpec(
         "transparency_error",
-        "Power mismatch used by the transparency metric.",
-        "transparency_error / MAX_POWER_ERROR",
-        lambda obs, info: _info_float(info, "transparency_error") / _safe_scale(cfg.MAX_POWER_ERROR),
+        "Position transparency ratio x_m / x_s; ideal value is 1.",
+        "transparency_ratio",
+        lambda obs, info: _info_float(info, "transparency_ratio", _info_float(info, "transparency_error")),
     ),
     "u_v": StateFeatureSpec(
         "u_v",

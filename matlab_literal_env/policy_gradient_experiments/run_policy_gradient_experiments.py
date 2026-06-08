@@ -231,7 +231,7 @@ def main() -> None:
     stage_summary_rows_to_csv([row], stage_dir / "study_summary.csv")
     runner._log(
         f"policy-gradient baseline complete | algo={args.algo} | "
-        f"track={result.tracking_rmse_m:.4f} m | transp={result.transparency_rmse_w:.4f} W"
+        f"track={result.tracking_rmse_m:.4f} m | transp={result.transparency_rmse_w:.4f}"
     )
 
 

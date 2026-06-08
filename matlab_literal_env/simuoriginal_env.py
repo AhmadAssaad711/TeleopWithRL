@@ -32,6 +32,18 @@ _TWO_PI = 2.0 * math.pi
 STROKE_LIMIT_MODES = ("terminate", "clamp")
 
 
+def position_transparency_ratio(x_m: float, x_s: float, eps: float = 1e-9) -> float:
+    """Return the position transparency ratio x_m / x_s with a stable zero-zero limit."""
+    x_m = float(x_m)
+    x_s = float(x_s)
+    eps = float(eps)
+    if abs(x_s) >= eps:
+        return float(x_m / x_s)
+    if abs(x_m - x_s) < eps:
+        return 1.0
+    return float(x_m / (eps if x_s >= 0.0 else -eps))
+
+
 def _normalize_action_levels(action_levels: list[float] | tuple[float, ...] | np.ndarray | None) -> np.ndarray:
     if action_levels is None:
         levels = np.asarray(cfg.V_LEVELS, dtype=np.float64)
@@ -46,6 +58,8 @@ def _normalize_action_levels(action_levels: list[float] | tuple[float, ...] | np
 
 def _force_waveform_value(phase: float, waveform: str) -> float:
     waveform = str(waveform).strip().lower()
+    if waveform in {"constant", "dc"}:
+        return 0.0
     if waveform == "sine":
         return math.sin(phase)
     if waveform == "cosine":
@@ -58,6 +72,13 @@ def _force_waveform_value(phase: float, waveform: str) -> float:
     if waveform == "multisine":
         return 0.75 * math.sin(phase) + 0.25 * math.sin((2.0 * phase) + 0.35)
     raise ValueError(f"Unknown force waveform: {waveform}")
+
+
+def _as_float_tuple(values) -> tuple[float, ...]:
+    if values is None:
+        return ()
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    return tuple(float(v) for v in arr)
 
 
 def _build_force_noise_components(
@@ -238,6 +259,12 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.force_chirp_duration = float(
             getattr(self, "force_chirp_duration", getattr(self, "fh_chirp_duration", self.episode_duration))
         )
+        self.force_sequence_times = _as_float_tuple(
+            getattr(self, "force_sequence_times", getattr(self, "fh_sequence_times", ()))
+        )
+        self.force_sequence_values = _as_float_tuple(
+            getattr(self, "force_sequence_values", getattr(self, "fh_sequence_values", ()))
+        )
         self.fh_amp = self.force_amp
         self.fh_bias = self.force_bias
         self.fh_freq = self.force_freq
@@ -246,6 +273,8 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.fh_waveform = self.force_waveform
         self.fh_noise_std = self.force_noise_std
         self.fh_noise_seed = self.force_noise_seed
+        self.fh_sequence_times = self.force_sequence_times
+        self.fh_sequence_values = self.force_sequence_values
 
     def _update_runtime_profile(self) -> None:
         if self.env_mode == cfg.ENV_MODE_CONSTANT:
@@ -278,6 +307,17 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.Ke = float(Ke)
 
     def _force_nominal_value(self, t: float) -> float:
+        if self.force_waveform in {"sequence", "step_sequence"}:
+            if not self.force_sequence_values:
+                return self.force_bias
+            if len(self.force_sequence_times) == len(self.force_sequence_values):
+                idx = int(np.searchsorted(self.force_sequence_times, float(t), side="right") - 1)
+                idx = int(np.clip(idx, 0, len(self.force_sequence_values) - 1))
+                return float(self.force_sequence_values[idx])
+            idx = int(np.searchsorted(self.force_sequence_times, float(t), side="right"))
+            idx = int(np.clip(idx, 0, len(self.force_sequence_values) - 1))
+            return float(self.force_sequence_values[idx])
+
         if self.force_waveform == "chirp":
             duration = max(abs(float(self.force_chirp_duration)), 1e-9)
             t_eff = min(max(float(t), 0.0), duration)
@@ -447,6 +487,9 @@ class SimuOriginalReplicaEnv(gym.Env):
         merged_options.update(options or {})
         options = merged_options
         self.profile = self._default_profile
+        if "episode_duration" in options and options["episode_duration"] is not None:
+            self.episode_duration = float(options["episode_duration"])
+            self.max_steps = max(1, int(round(self.episode_duration / cfg.RL_DT)))
         if "env_switch_time" in options and options["env_switch_time"] is not None:
             self.env_switch_time = float(options["env_switch_time"])
 
@@ -480,8 +523,11 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.force_release_value = 0.0
         self.force_chirp_end_freq_rad = _TWO_PI * self.force_freq
         self.force_chirp_duration = self.episode_duration
+        self.force_sequence_times: tuple[float, ...] = ()
+        self.force_sequence_values: tuple[float, ...] = ()
         self.fe_mode = FE_MODE_GUI
         for key in (
+            "episode_duration",
             "force_amp",
             "force_bias",
             "force_freq",
@@ -494,6 +540,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_release_value",
             "force_chirp_end_freq_rad",
             "force_chirp_duration",
+            "force_sequence_times",
+            "force_sequence_values",
             "fe_mode",
             "legacy_baseline_env",
             "reset_position_mode",
@@ -513,6 +561,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "fh_release_value",
             "fh_chirp_end_freq_rad",
             "fh_chirp_duration",
+            "fh_sequence_times",
+            "fh_sequence_values",
         ):
             if key in options:
                 setattr(self, key, options[key])
@@ -587,6 +637,7 @@ class SimuOriginalReplicaEnv(gym.Env):
             "env_id": [],
             "env_label": [],
             "pos_error": [],
+            "transparency_ratio": [],
             "transparency_error": [],
             "reward_track": [],
             "reward_effort": [],
@@ -608,7 +659,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             return
         x_m_centered, x_s_centered = self.get_centered_positions()
         pos_error = float(self.state[self.IX_XM] - self.state[self.IX_XS])
-        transparency_error = float((self.F_e * self.state[self.IX_VM]) - (self.F_h * self.state[self.IX_VS]))
+        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
+        transparency_error = float(transparency_ratio - 1.0)
         self._history["time"].append(self.t)
         self._history["x_m"].append(self.state[self.IX_XM])
         self._history["x_s"].append(self.state[self.IX_XS])
@@ -634,6 +686,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["env_id"].append(self.current_env_id)
         self._history["env_label"].append(self.current_env_label)
         self._history["pos_error"].append(pos_error)
+        self._history["transparency_ratio"].append(transparency_ratio)
         self._history["transparency_error"].append(transparency_error)
         self._history["reward_track"].append(track_term)
         self._history["reward_effort"].append(effort_term)
@@ -693,8 +746,9 @@ class SimuOriginalReplicaEnv(gym.Env):
         norm_pos_error = float(
             np.clip(pos_error / cfg.MAX_POSITION_ERROR, -cfg.POS_ERR_NORM_CLIP, cfg.POS_ERR_NORM_CLIP)
         )
-        transparency_error = float((self.F_e * self.state[self.IX_VM]) - (self.F_h * self.state[self.IX_VS]))
-        norm_transparency_error = transparency_error / cfg.MAX_POWER_ERROR
+        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
+        transparency_error = float(transparency_ratio - 1.0)
+        norm_transparency_error = transparency_error
         track_term = cfg.ALPHA_TRACKING * norm_pos_error ** 2
         effort_term = cfg.GAMMA_EFFORT * u_v ** 2
         transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error ** 2
@@ -759,6 +813,7 @@ class SimuOriginalReplicaEnv(gym.Env):
 
     def _get_info(self) -> dict:
         x_m_centered, x_s_centered = self.get_centered_positions()
+        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
         return {
             "time": self.t,
             "u_v": self.last_u_v,
@@ -780,7 +835,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "x_m_centered": x_m_centered,
             "x_s_centered": x_s_centered,
             "pos_error": float(self.state[self.IX_XM] - self.state[self.IX_XS]),
-            "transparency_error": float((self.F_e * self.state[self.IX_VM]) - (self.F_h * self.state[self.IX_VS])),
+            "transparency_ratio": transparency_ratio,
+            "transparency_error": transparency_ratio - 1.0,
             "step_count": self.step_count,
             "max_steps": self.max_steps,
             "episode_duration": self.episode_duration,
@@ -795,6 +851,8 @@ class SimuOriginalReplicaEnv(gym.Env):
             "force_release_value": self.force_release_value,
             "force_chirp_end_freq_rad": self.force_chirp_end_freq_rad,
             "force_chirp_duration": self.force_chirp_duration,
+            "force_sequence_times": self.force_sequence_times,
+            "force_sequence_values": self.force_sequence_values,
             "fe_mode": self.fe_mode,
             "legacy_baseline_env": self.legacy_baseline_env,
             "reset_position_mode": self.reset_position_mode,

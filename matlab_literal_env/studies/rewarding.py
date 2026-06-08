@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from ... import config as cfg
+from ..simuoriginal_env import position_transparency_ratio
 
 _ACTION_LEVELS = np.asarray(getattr(cfg, "V_LEVELS", [-5.0, 5.0]), dtype=np.float64).reshape(-1)
 DEFAULT_ACTION_SCALE_V = float(np.max(np.abs(_ACTION_LEVELS))) if _ACTION_LEVELS.size else 1.0
@@ -15,7 +16,8 @@ DEFAULT_ACTION_DELTA_SCALE_V = float(max(1.0, 2.0 * DEFAULT_ACTION_SCALE_V))
 DEFAULT_TRACKING_SCALE_M = float(cfg.L_CYL)
 DEFAULT_VELOCITY_ERROR_SCALE_MPS = 3.0
 DEFAULT_FORCE_DIFF_SCALE_N = 25.0
-DEFAULT_TRANSPARENCY_SCALE_W = 60.0
+DEFAULT_TRANSPARENCY_SCALE_RATIO = 1.0
+DEFAULT_TRANSPARENCY_SCALE_W = DEFAULT_TRANSPARENCY_SCALE_RATIO
 
 
 @dataclass(frozen=True)
@@ -26,7 +28,7 @@ class RewardVariant:
     jerk_weight: float
     use_jerk: bool
     tracking_scale_m: float = float(cfg.MAX_POSITION_ERROR)
-    transparency_scale_w: float = float(cfg.MAX_POWER_ERROR)
+    transparency_scale_w: float = DEFAULT_TRANSPARENCY_SCALE_RATIO
     velocity_weight: float = 0.0
     velocity_scale_mps: float = 1.0
     force_diff_weight: float = 0.0
@@ -553,6 +555,8 @@ def compute_reward_terms(
             "abs_pos_error": abs(float(pos_error)),
             "velocity_error": float(velocity_error),
             "abs_velocity_error": abs(float(velocity_error)),
+            "transparency_ratio": float(1.0 + transparency_error),
+            "abs_transparency_ratio": abs(float(1.0 + transparency_error)),
             "transparency_error": float(transparency_error),
             "abs_transparency_error": abs(float(transparency_error)),
             "force_diff": float(force_diff),
@@ -677,7 +681,18 @@ class ReplicaRewardEnv:
         f_e = float(info.get("F_e", self._last(history, "F_e")))
         pos_error = self._last(history, "pos_error", x_m - x_s)
         velocity_error = v_m - v_s
-        transparency_error = self._last(history, "transparency_error", (f_e * v_m) - (f_h * v_s))
+        transparency_ratio = float(
+            info.get(
+                "transparency_ratio",
+                self._last(history, "transparency_ratio", position_transparency_ratio(x_m, x_s)),
+            )
+        )
+        transparency_error = float(
+            info.get(
+                "transparency_error",
+                self._last(history, "transparency_error", transparency_ratio - 1.0),
+            )
+        )
         force_diff = f_e - f_h
         u_v = self._last(history, "u_v", float(info.get("u_v", 0.0)))
         requested_u_v = self._last(history, "requested_u_v", float(info.get("requested_u_v", u_v)))
@@ -725,6 +740,7 @@ class ReplicaRewardEnv:
             "pos_error": pos_error,
             "tracking_error": pos_error,
             "velocity_error": velocity_error,
+            "transparency_ratio": transparency_ratio,
             "transparency_error": transparency_error,
             "force_diff": force_diff,
             "delta_P_m": self._last(history, "P_m1") - self._last(history, "P_m2"),
@@ -746,7 +762,20 @@ class ReplicaRewardEnv:
         history = self.base_env.render() or {}
         pos_error = self._last(history, "pos_error")
         velocity_error = self._last(history, "v_m") - self._last(history, "v_s")
-        transparency_error = self._last(history, "transparency_error")
+        x_m = float(info.get("x_m", self._last(history, "x_m")))
+        x_s = float(info.get("x_s", self._last(history, "x_s")))
+        transparency_ratio = float(
+            info.get(
+                "transparency_ratio",
+                self._last(history, "transparency_ratio", position_transparency_ratio(x_m, x_s)),
+            )
+        )
+        transparency_error = float(
+            info.get(
+                "transparency_error",
+                self._last(history, "transparency_error", transparency_ratio - 1.0),
+            )
+        )
         force_diff = self._last(history, "F_e") - self._last(history, "F_h")
         u_v = self._last(history, "u_v")
         action_delta = float(u_v - self._prev_u_v)

@@ -508,7 +508,7 @@ def train_dqn_variant(
                 print(
                     f"[dqn] {label} | ep {step}/{total_episodes} | "
                     f"return={ep_return:.2f} | track={ep_track[ep]:.4f} m | "
-                    f"transp={ep_transp[ep]:.4f} W | eps={agent.epsilon:.4f} | "
+                    f"transp={ep_transp[ep]:.4f} | eps={agent.epsilon:.4f} | "
                     f"replay={len(agent.replay_buffer)} | loss={loss_text} | "
                     f"elapsed={elapsed_min:.1f} min",
                     flush=True,
@@ -630,7 +630,7 @@ def train_dqn_variant(
                         print(
                             f"[dqn] {label} | ep {step}/{total_episodes} | "
                             f"return={ep_returns[completed]:.2f} | track={ep_track[completed]:.4f} m | "
-                            f"transp={ep_transp[completed]:.4f} W | eps={agent.epsilon:.4f} | "
+                            f"transp={ep_transp[completed]:.4f} | eps={agent.epsilon:.4f} | "
                             f"replay={len(agent.replay_buffer)} | loss={loss_text} | "
                             f"parallel_envs={parallel_envs} | elapsed={elapsed_min:.1f} min",
                             flush=True,

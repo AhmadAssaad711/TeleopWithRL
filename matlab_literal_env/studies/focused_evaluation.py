@@ -52,6 +52,9 @@ class EvaluationScenario:
     force_release_value: float = 0.0
     force_chirp_end_freq_rad: float | None = None
     force_chirp_duration: float | None = None
+    force_sequence_times: tuple[float, ...] | None = None
+    force_sequence_values: tuple[float, ...] | None = None
+    episode_duration: float | None = None
     notes: str = ""
 
     def reset_options(self) -> dict[str, Any]:
@@ -68,6 +71,8 @@ class EvaluationScenario:
             "post_switch_Ke": float(self.post_switch_Ke),
             "post_switch_Be": float(self.post_switch_Be),
         }
+        if self.episode_duration is not None:
+            options["episode_duration"] = float(self.episode_duration)
         if self.initial_state_delta is not None:
             options["initial_state_delta"] = list(self.initial_state_delta)
         if self.force_release_time is not None:
@@ -77,6 +82,10 @@ class EvaluationScenario:
             options["force_chirp_end_freq_rad"] = float(self.force_chirp_end_freq_rad)
         if self.force_chirp_duration is not None:
             options["force_chirp_duration"] = float(self.force_chirp_duration)
+        if self.force_sequence_times is not None:
+            options["force_sequence_times"] = list(self.force_sequence_times)
+        if self.force_sequence_values is not None:
+            options["force_sequence_values"] = list(self.force_sequence_values)
         return options
 
 
@@ -211,6 +220,9 @@ def _scenario(base: dict[str, float | str], *, name: str, group: str, **override
         force_release_value=float(payload.get("force_release_value", 0.0)),
         force_chirp_end_freq_rad=payload.get("force_chirp_end_freq_rad"),
         force_chirp_duration=payload.get("force_chirp_duration"),
+        force_sequence_times=_tuple_or_none(payload.get("force_sequence_times")),
+        force_sequence_values=_tuple_or_none(payload.get("force_sequence_values")),
+        episode_duration=payload.get("episode_duration"),
         notes=str(payload.get("notes", "")),
     )
 
@@ -222,42 +234,112 @@ def _delta(**entries: float) -> tuple[float, ...]:
     return tuple(float(v) for v in values)
 
 
+def _tuple_or_none(values: Any) -> tuple[float, ...] | None:
+    if values is None:
+        return None
+    return tuple(float(v) for v in values)
+
+
 def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]:
     base = _nominal_values(summary)
-    a0 = float(base["force_amp"])
-    w0 = float(base["force_freq_rad"])
     k0 = float(base["post_switch_Ke"])
     b0 = float(base["post_switch_Be"])
     contact_t = float(base["env_switch_time"])
     duration = float(base["episode_duration"])
+    lit_amp = 10.0
+    lit_omega = math.pi
+    lit_base = {
+        **base,
+        "force_waveform": "sine",
+        "force_amp": lit_amp,
+        "force_bias": 0.0,
+        "force_freq_rad": lit_omega,
+        "force_phase": 0.0,
+    }
 
     scenarios: list[EvaluationScenario] = [
-        _scenario(base, name="nominal", group="nominal"),
+        _scenario(
+            lit_base,
+            name="nominal",
+            group="nominal",
+            notes="Baayoun-style 10 N sine at 0.5 Hz / pi rad-s, zero bias.",
+        ),
     ]
 
-    for label, factor in (("low", 0.6), ("nominal", 1.0), ("high", 1.4)):
+    for label, amp in (("1N", 1.0), ("10N", 10.0), ("20N", 20.0)):
         scenarios.append(
-            _scenario(base, name=f"force_amp_{label}", group="human_force_amplitude", force_amp=a0 * factor)
+            _scenario(
+                lit_base,
+                name=f"force_amp_{label}",
+                group="paper_force_amplitude",
+                force_amp=amp,
+                notes="Literature force-amplitude set: 1 N, 10 N, 20 N.",
+            )
         )
 
-    for label, factor in (("low", 0.5), ("nominal", 1.0), ("high", 1.5)):
+    for label, omega in (("1_rad_s", 1.0), ("pi_rad_s", math.pi), ("5_rad_s", 5.0), ("10_rad_s", 10.0)):
         scenarios.append(
-            _scenario(base, name=f"force_freq_{label}", group="human_force_frequency", force_freq_rad=w0 * factor)
+            _scenario(
+                lit_base,
+                name=f"force_freq_{label}",
+                group="paper_force_frequency",
+                force_freq_rad=omega,
+                notes="Literature frequency set: 1, pi, 5, 10 rad/s.",
+            )
         )
 
     scenarios.extend(
         [
-            _scenario(base, name="signal_sine", group="human_force_signal_type", force_waveform="sine"),
-            _scenario(base, name="signal_pulse", group="human_force_signal_type", force_waveform="square"),
-            _scenario(base, name="signal_ramp", group="human_force_signal_type", force_waveform="ramp"),
             _scenario(
-                base,
-                name="signal_chirp",
-                group="human_force_signal_type",
+                lit_base,
+                name="signal_sine_10N_pi",
+                group="paper_signal_type",
+                force_waveform="sine",
+                notes="10 N sinusoidal force at pi rad/s.",
+            ),
+            _scenario(
+                lit_base,
+                name="signal_pulse_10N_pi",
+                group="paper_signal_type",
+                force_waveform="square",
+                notes="Pulse-like operator input, implemented as a square-like force.",
+            ),
+            _scenario(
+                lit_base,
+                name="signal_constant_0p5N",
+                group="paper_signal_type",
+                force_waveform="constant",
+                force_amp=0.0,
+                force_bias=0.5,
+                notes="Constant 0.5 N forward force used in object simulations.",
+            ),
+            _scenario(
+                lit_base,
+                name="signal_sequence_1_10_20N",
+                group="paper_signal_type",
+                force_waveform="sequence",
+                force_amp=0.0,
+                force_bias=0.0,
+                force_sequence_times=(0.0, duration / 3.0, 2.0 * duration / 3.0),
+                force_sequence_values=(1.0, 10.0, 20.0),
+                notes="Changing-force sequence inspired by 1 N, 10 N, 20 N tests.",
+            ),
+            _scenario(
+                lit_base,
+                name="signal_ramp_generalization",
+                group="engineering_signal_generalization",
+                force_waveform="ramp",
+                notes="Engineering generalization test; not Baayoun-derived.",
+            ),
+            _scenario(
+                lit_base,
+                name="signal_chirp_generalization",
+                group="engineering_signal_generalization",
                 force_waveform="chirp",
-                force_freq_rad=0.5 * w0,
-                force_chirp_end_freq_rad=1.5 * w0,
+                force_freq_rad=1.0,
+                force_chirp_end_freq_rad=10.0,
                 force_chirp_duration=duration,
+                notes="Engineering frequency-sweep generalization test; not Baayoun-derived.",
             ),
         ]
     )
@@ -265,47 +347,49 @@ def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]
     for label, factor in (("low", 0.5), ("nominal", 1.0), ("high", 1.5)):
         scenarios.append(
             _scenario(
-                base,
+                lit_base,
                 name=f"env_K_{label}",
                 group="environment_stiffness",
                 post_switch_Ke=k0 * factor,
                 post_switch_Be=b0,
+                notes="One-factor SI-unit stiffness variation around fat-like Baayoun value.",
             )
         )
 
     for label, factor in (("low", 0.5), ("nominal", 1.0), ("high", 2.0)):
         scenarios.append(
             _scenario(
-                base,
+                lit_base,
                 name=f"env_B_{label}",
                 group="environment_damping",
                 post_switch_Ke=k0,
                 post_switch_Be=b0 * factor,
+                notes="One-factor SI-unit damping variation around fat-like Baayoun value.",
             )
         )
 
     scenarios.extend(
         [
             _scenario(
-                base,
+                lit_base,
                 name="init_error_pos_10mm",
                 group="initial_condition",
                 initial_state_delta=_delta(**{str(_REPLICA_XM): 0.005, str(_REPLICA_XS): -0.005}),
             ),
             _scenario(
-                base,
+                lit_base,
                 name="init_error_neg_10mm",
                 group="initial_condition",
                 initial_state_delta=_delta(**{str(_REPLICA_XM): -0.005, str(_REPLICA_XS): 0.005}),
             ),
             _scenario(
-                base,
+                lit_base,
                 name="init_master_vel_pos",
                 group="initial_condition",
                 initial_state_delta=_delta(**{str(_REPLICA_XM_DOT): 0.05}),
             ),
             _scenario(
-                base,
+                lit_base,
                 name="init_slave_vel_neg",
                 group="initial_condition",
                 initial_state_delta=_delta(**{str(_REPLICA_XS_DOT): -0.05}),
@@ -316,11 +400,15 @@ def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]
     release_time = min(duration - cfg.RL_DT, max(contact_t + 5.0, 0.5 * duration))
     scenarios.append(
         _scenario(
-            base,
-            name=f"sudden_release_t{release_time:g}s".replace(".", "p"),
-            group="sudden_release",
+            lit_base,
+            name=f"sudden_release_constant_10N_t{release_time:g}s".replace(".", "p"),
+            group="paper_sudden_release",
+            force_waveform="constant",
+            force_amp=0.0,
+            force_bias=10.0,
             force_release_time=release_time,
             force_release_value=0.0,
+            notes="Constant forward force followed by sudden release.",
         )
     )
     return scenarios
@@ -328,7 +416,15 @@ def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]
 
 def build_bode_scenarios(summary: dict[str, Any], frequencies_rad_s: list[float] | None = None) -> list[EvaluationScenario]:
     base = _nominal_values(summary)
-    frequencies = frequencies_rad_s or [1.0, 2.0, 4.0, 6.0, 8.0, 12.0]
+    base = {
+        **base,
+        "force_amp": 10.0,
+        "force_bias": 0.0,
+        "force_phase": 0.0,
+    }
+    frequencies = frequencies_rad_s or [0.1, 0.4, 0.5, 1.0, math.pi, 5.0, 10.0, 12.0]
+    contact_t = float(base["env_switch_time"])
+    base_duration = float(base["episode_duration"])
     return [
         _scenario(
             base,
@@ -337,6 +433,8 @@ def build_bode_scenarios(summary: dict[str, Any], frequencies_rad_s: list[float]
             force_waveform="sine",
             force_freq_rad=float(omega),
             force_phase=0.0,
+            episode_duration=max(base_duration, contact_t + (4.0 * (2.0 * math.pi / max(float(omega), 1e-9)))),
+            notes="Paper-matched Bode frequency set; 12 rad/s is retained as extrapolation.",
         )
         for omega in frequencies
     ]
@@ -444,6 +542,7 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
         "force_freq_rad_s": float(scenario.force_freq_rad),
         "K_e": float(scenario.post_switch_Ke),
         "B_e": float(scenario.post_switch_Be),
+        "episode_duration_s": "" if scenario.episode_duration is None else float(scenario.episode_duration),
         "initial_condition_changed": int(scenario.initial_state_delta is not None),
         "release_time_s": "" if scenario.force_release_time is None else float(scenario.force_release_time),
         "episode_return": float(np.sum(reward)) if reward.size else 0.0,
@@ -641,7 +740,7 @@ def run_focused_evaluation(
         "reward_variant": reward_variant.name,
         "deterministic": bool(deterministic),
         "seed": int(seed),
-        "methodology": "focused_unified_eval_v1",
+        "methodology": "paper_matched_eval_v1",
         "groups": groups,
         "metrics": [
             "rms_error_m",
