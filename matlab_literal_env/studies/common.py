@@ -292,8 +292,23 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     force_error = f_e - f_h if f_h.size and f_e.size else np.asarray([], dtype=np.float64)
+    v_m = history_array(history, "v_m", dtype=np.float64)
+    v_s = history_array(history, "v_s", dtype=np.float64)
+    velocity_error = v_m - v_s if v_m.size and v_s.size else np.asarray([], dtype=np.float64)
+    a_m = history_array(history, "a_m_signal", dtype=np.float64)
+    a_s = history_array(history, "a_s_signal", dtype=np.float64)
+    acceleration_error = a_m - a_s if a_m.size and a_s.size else np.asarray([], dtype=np.float64)
+    u_v = history_array(history, "u_v", dtype=np.float64)
+    delta_u = np.diff(u_v) if u_v.size >= 2 else np.asarray([], dtype=np.float64)
     time_s = history_array(history, "time", dtype=np.float64)
     invalid = history_array(history, "invalid_state", dtype=np.float64)
+    if time_s.size >= 2:
+        dt_s = float(np.nanmedian(np.diff(time_s)))
+        if not np.isfinite(dt_s) or dt_s <= 0.0:
+            dt_s = float(cfg.RL_DT)
+    else:
+        dt_s = float(cfg.RL_DT)
+    action_limit = float(np.max(np.abs(cfg.V_LEVELS))) if np.asarray(cfg.V_LEVELS).size else 1.0
 
     def _rmse(values: np.ndarray, mask: np.ndarray | None = None) -> float:
         if values.size == 0:
@@ -315,11 +330,23 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     return {
         "mean_reward": float(np.sum(rewards)) if rewards.size else 0.0,
         "tracking_rmse_m": _rmse(pos_error),
+        "tracking_mae_m": float(np.mean(np.abs(pos_error))) if pos_error.size else 0.0,
+        "tracking_max_abs_m": float(np.max(np.abs(pos_error))) if pos_error.size else 0.0,
+        "velocity_error_rmse_mps": _rmse(velocity_error),
+        "acceleration_error_rmse_mps2": _rmse(acceleration_error),
         "force_rmse_n": _rmse(force_error),
         "transparency_rmse_w": transparency_ratio_mean,
         "transparency_ratio_mean": transparency_ratio_mean,
         "transparency_ratio_rmse": _rmse(transparency_ratio),
         "transparency_ratio_error_rmse": _rmse(transparency_error),
+        "mean_abs_u_v": float(np.mean(np.abs(u_v))) if u_v.size else 0.0,
+        "rms_u_v": _rmse(u_v),
+        "control_energy_v2_s": float(np.sum(u_v ** 2) * dt_s) if u_v.size else 0.0,
+        "max_abs_u_v": float(np.max(np.abs(u_v))) if u_v.size else 0.0,
+        "saturation_fraction": float(np.mean(np.abs(u_v) >= 0.98 * action_limit)) if u_v.size else 0.0,
+        "mean_abs_delta_u_v": float(np.mean(np.abs(delta_u))) if delta_u.size else 0.0,
+        "rms_delta_u_v": _rmse(delta_u),
+        "max_abs_delta_u_v": float(np.max(np.abs(delta_u))) if delta_u.size else 0.0,
         "pre_switch_tracking_rmse_m": _rmse(pos_error, pre_mask),
         "post_switch_tracking_rmse_m": _rmse(pos_error, post_mask),
         "pre_switch_force_rmse_n": _rmse(force_error, pre_mask),

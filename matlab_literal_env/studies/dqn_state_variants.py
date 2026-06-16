@@ -35,6 +35,10 @@ def _valve_velocity_scale() -> float:
     return max(150.0 * _valve_position_scale(), 1.0)
 
 
+def _acceleration_scale() -> float:
+    return max(float(getattr(cfg, "OBS_SCALE_VEL", 1.0)) / max(float(getattr(cfg, "RL_DT", 1.0)), 1e-9), 1e-6)
+
+
 def _safe_scale(value: float) -> float:
     return max(abs(float(value)), 1e-6)
 
@@ -214,6 +218,13 @@ def _custom_velocity_error(obs: np.ndarray, info: dict[str, Any]) -> float:
     return float(obs[3] - obs[2])
 
 
+def _custom_acceleration_error(obs: np.ndarray, info: dict[str, Any]) -> float:
+    del obs
+    return (
+        _info_float(info, "a_m_signal") - _info_float(info, "a_s_signal")
+    ) / _acceleration_scale()
+
+
 def _custom_force_diff(obs: np.ndarray, info: dict[str, Any]) -> float:
     del obs
     return (
@@ -329,6 +340,30 @@ _CUSTOM_STATE_FEATURES: dict[str, StateFeatureSpec] = {
         "Master minus slave velocity.",
         "(v_m - v_s) / OBS_SCALE_VEL",
         _custom_velocity_error,
+    ),
+    "x_m_ddot": StateFeatureSpec(
+        "x_m_ddot",
+        "Master acceleration from the plant derivative.",
+        "x_m_ddot / acceleration_scale",
+        lambda obs, info: _info_float(info, "a_m_signal") / _acceleration_scale(),
+    ),
+    "x_s_ddot": StateFeatureSpec(
+        "x_s_ddot",
+        "Slave acceleration from the plant derivative.",
+        "x_s_ddot / acceleration_scale",
+        lambda obs, info: _info_float(info, "a_s_signal") / _acceleration_scale(),
+    ),
+    "acceleration_error": StateFeatureSpec(
+        "acceleration_error",
+        "Master minus slave acceleration.",
+        "(x_m_ddot - x_s_ddot) / acceleration_scale",
+        _custom_acceleration_error,
+    ),
+    "tracking_error_ddot": StateFeatureSpec(
+        "tracking_error_ddot",
+        "Alias for acceleration_error.",
+        "(x_m_ddot - x_s_ddot) / acceleration_scale",
+        _custom_acceleration_error,
     ),
     "F_h": StateFeatureSpec(
         "F_h",

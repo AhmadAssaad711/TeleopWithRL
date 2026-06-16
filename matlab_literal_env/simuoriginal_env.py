@@ -228,6 +228,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.F_h = 0.0
         self.F_e = 0.0
         self.a_m_signal = 0.0
+        self.a_s_signal = 0.0
         self.fe_mode = FE_MODE_GUI
         self.requested_u_v = 0.0
         self.hit_stroke_stop = False
@@ -457,7 +458,12 @@ class SimuOriginalReplicaEnv(gym.Env):
                 self.runtime_profile,
             )
         deriv = self._derivative_fn(self.t, self.replica_state)
-        self.a_m_signal = float(deriv[2]) if np.all(np.isfinite(deriv)) else 0.0
+        if np.all(np.isfinite(deriv)):
+            self.a_m_signal = float(deriv[2])
+            self.a_s_signal = float(deriv[6])
+        else:
+            self.a_m_signal = 0.0
+            self.a_s_signal = 0.0
 
     def _edge_action_scale(self) -> float:
         buffer_m = float(self.edge_action_damping_buffer_m)
@@ -509,6 +515,8 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.last_truncated = False
         self.last_u_v = 0.0
         self.requested_u_v = 0.0
+        self.a_m_signal = 0.0
+        self.a_s_signal = 0.0
         self.hit_stroke_stop = False
 
         self.force_amp = float(cfg.FORCE_INPUT_AMP)
@@ -629,6 +637,7 @@ class SimuOriginalReplicaEnv(gym.Env):
             "F_h_nominal": [],
             "F_h_noise": [],
             "a_m_signal": [],
+            "a_s_signal": [],
             "F_e": [],
             "u_v": [],
             "requested_u_v": [],
@@ -678,6 +687,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["F_h_nominal"].append(self.F_h_nominal)
         self._history["F_h_noise"].append(self.F_h_noise)
         self._history["a_m_signal"].append(self.a_m_signal)
+        self._history["a_s_signal"].append(self.a_s_signal)
         self._history["F_e"].append(self.F_e)
         self._history["u_v"].append(self.last_u_v)
         self._history["requested_u_v"].append(self.requested_u_v)
@@ -822,6 +832,7 @@ class SimuOriginalReplicaEnv(gym.Env):
             "F_h_nominal": self.F_h_nominal,
             "F_h_noise": self.F_h_noise,
             "a_m_signal": self.a_m_signal,
+            "a_s_signal": self.a_s_signal,
             "F_e": self.F_e,
             "env_id": self.current_env_id,
             "env_label": self.current_env_label,

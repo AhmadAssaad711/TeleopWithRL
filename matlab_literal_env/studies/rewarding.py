@@ -681,6 +681,9 @@ class ReplicaRewardEnv:
         f_e = float(info.get("F_e", self._last(history, "F_e")))
         pos_error = self._last(history, "pos_error", x_m - x_s)
         velocity_error = v_m - v_s
+        x_m_ddot = float(info.get("a_m_signal", self._last(history, "a_m_signal")))
+        x_s_ddot = float(info.get("a_s_signal", self._last(history, "a_s_signal")))
+        acceleration_error = x_m_ddot - x_s_ddot
         transparency_ratio = float(
             info.get(
                 "transparency_ratio",
@@ -734,12 +737,18 @@ class ReplicaRewardEnv:
             "x_v_dot": float(info.get("x_v_dot", self._last(history, "x_v_dot"))),
             "F_h": f_h,
             "F_e": f_e,
+            "x_m_ddot": x_m_ddot,
+            "x_s_ddot": x_s_ddot,
+            "a_m_signal": x_m_ddot,
+            "a_s_signal": x_s_ddot,
             "u_v": u_v,
             "requested_u_v": requested_u_v,
             "action_delta": float(action_delta),
             "pos_error": pos_error,
             "tracking_error": pos_error,
             "velocity_error": velocity_error,
+            "acceleration_error": acceleration_error,
+            "tracking_error_ddot": acceleration_error,
             "transparency_ratio": transparency_ratio,
             "transparency_error": transparency_error,
             "force_diff": force_diff,

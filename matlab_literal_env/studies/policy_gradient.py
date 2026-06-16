@@ -324,6 +324,13 @@ class PolicyGradientMetricsCallback(BaseCallback):
         self.eval_mean_reward.append(float(eval_metrics["mean_reward"]))
         self.eval_tracking_rmse.append(float(eval_metrics["tracking_rmse_m"]))
         self.eval_transparency_rmse.append(float(eval_metrics["transparency_rmse_w"]))
+        for key, value in eval_metrics.items():
+            try:
+                self.logger.record(f"teleop_eval/{key}", float(value))
+            except (TypeError, ValueError):
+                continue
+        self.logger.record("teleop_eval/completed_episodes", float(self.completed_episodes))
+        self.logger.dump(self.num_timesteps)
 
     def _on_step(self) -> bool:
         self._update_progress()
@@ -347,6 +354,27 @@ class PolicyGradientMetricsCallback(BaseCallback):
             self.episode_pre_transparency_rmse.append(float(metrics.get("pre_switch_transparency_rmse_w", 0.0)))
             self.episode_post_transparency_rmse.append(float(metrics.get("post_switch_transparency_rmse_w", 0.0)))
             self.episode_invalid.append(float(metrics.get("invalid_episode", 0.0)))
+            for key in (
+                "mean_reward",
+                "tracking_rmse_m",
+                "tracking_mae_m",
+                "tracking_max_abs_m",
+                "velocity_error_rmse_mps",
+                "acceleration_error_rmse_mps2",
+                "transparency_ratio_mean",
+                "transparency_ratio_error_rmse",
+                "mean_abs_u_v",
+                "rms_u_v",
+                "control_energy_v2_s",
+                "mean_abs_delta_u_v",
+                "rms_delta_u_v",
+                "saturation_fraction",
+                "invalid_episode",
+            ):
+                if key in metrics:
+                    self.logger.record(f"teleop_train/{key}", float(metrics[key]))
+            self.logger.record("teleop_train/completed_episodes", float(self.completed_episodes))
+            self.logger.dump(self.num_timesteps)
 
             should_eval = (
                 self.completed_episodes == 1
@@ -1146,6 +1174,20 @@ def train_policy_gradient_variant(
             "requested_resolved_vec_env_type": resolved_vec_env_type,
             "action_space_type": "discrete" if algo == PG_ALGO_PPO_DISCRETE else "continuous",
             "action_levels": action_levels,
+            "eval_metrics": eval_metrics,
+            "tracking_mae_m": float(eval_metrics.get("tracking_mae_m", 0.0)),
+            "tracking_max_abs_m": float(eval_metrics.get("tracking_max_abs_m", 0.0)),
+            "velocity_error_rmse_mps": float(eval_metrics.get("velocity_error_rmse_mps", 0.0)),
+            "acceleration_error_rmse_mps2": float(eval_metrics.get("acceleration_error_rmse_mps2", 0.0)),
+            "transparency_ratio_error_rmse": float(eval_metrics.get("transparency_ratio_error_rmse", 0.0)),
+            "mean_abs_u_v": float(eval_metrics.get("mean_abs_u_v", 0.0)),
+            "rms_u_v": float(eval_metrics.get("rms_u_v", 0.0)),
+            "control_energy_v2_s": float(eval_metrics.get("control_energy_v2_s", 0.0)),
+            "max_abs_u_v": float(eval_metrics.get("max_abs_u_v", 0.0)),
+            "saturation_fraction": float(eval_metrics.get("saturation_fraction", 0.0)),
+            "mean_abs_delta_u_v": float(eval_metrics.get("mean_abs_delta_u_v", 0.0)),
+            "rms_delta_u_v": float(eval_metrics.get("rms_delta_u_v", 0.0)),
+            "max_abs_delta_u_v": float(eval_metrics.get("max_abs_delta_u_v", 0.0)),
         },
     )
     return result

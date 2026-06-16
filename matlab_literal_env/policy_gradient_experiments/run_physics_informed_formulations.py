@@ -1,0 +1,689 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+if __package__ in (None, ""):
+    _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from TeleopWithRL import config as cfg
+    from TeleopWithRL.matlab_literal_env.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
+    from TeleopWithRL.matlab_literal_env.scripts._common import replica_env_kwargs_from_args
+    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_DYNAMICS
+    from TeleopWithRL.matlab_literal_env.studies.common import (
+        history_array,
+        save_history_npz,
+        save_json,
+        transparency_ratio_array,
+    )
+    from TeleopWithRL.matlab_literal_env.studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
+    from TeleopWithRL.matlab_literal_env.studies.policy_gradient import (
+        PG_ALGO_PPO_CONTINUOUS,
+        build_policy_gradient_env_factory,
+        evaluate_policy_gradient,
+        require_sb3,
+        save_policy_gradient_visuals,
+        train_policy_gradient_variant,
+    )
+    from TeleopWithRL.matlab_literal_env.studies.rewarding import (
+        DEFAULT_ACTION_DELTA_SCALE_V,
+        DEFAULT_ACTION_SCALE_V,
+        DEFAULT_TRACKING_SCALE_M,
+        DEFAULT_VELOCITY_ERROR_SCALE_MPS,
+        reward_variant_from_spec,
+    )
+else:
+    from ... import config as cfg
+    from .paths import suite_root as policy_gradient_suite_root
+    from ..scripts._common import replica_env_kwargs_from_args
+    from ..simuoriginal_replica import FE_MODE_DYNAMICS
+    from ..studies.common import history_array, save_history_npz, save_json, transparency_ratio_array
+    from ..studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
+    from ..studies.policy_gradient import (
+        PG_ALGO_PPO_CONTINUOUS,
+        build_policy_gradient_env_factory,
+        evaluate_policy_gradient,
+        require_sb3,
+        save_policy_gradient_visuals,
+        train_policy_gradient_variant,
+    )
+    from ..studies.rewarding import (
+        DEFAULT_ACTION_DELTA_SCALE_V,
+        DEFAULT_ACTION_SCALE_V,
+        DEFAULT_TRACKING_SCALE_M,
+        DEFAULT_VELOCITY_ERROR_SCALE_MPS,
+        reward_variant_from_spec,
+    )
+
+
+@dataclass(frozen=True)
+class Formulation:
+    key: str
+    label: str
+    state_features: tuple[str, ...]
+    extra_terms: tuple[dict[str, Any], ...]
+    note: str
+
+
+BASELINE_FEATURES = ("x_m", "x_s", "v_m", "v_s", "u_v")
+
+
+def _acceleration_scale() -> float:
+    return max(float(cfg.OBS_SCALE_VEL) / max(float(cfg.RL_DT), 1e-9), 1e-6)
+
+
+def _term(name: str, source: str, weight: float, scale_name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "source": source,
+        "shape": "square",
+        "sign": "penalty",
+        "weight": float(weight),
+        "scale_name": scale_name,
+    }
+
+
+BASE_REWARD_TERMS = (
+    _term("tracking_base", "pos_error", 40.0, "tracking_error_m"),
+    _term("control_effort", "u_v", 0.01, "action_voltage_v"),
+)
+
+
+FORMULATIONS = (
+    Formulation(
+        "F0_baseline",
+        "Baseline",
+        BASELINE_FEATURES,
+        (),
+        "x_m, x_s, xdot_m, xdot_s, u_{t-1}; baseline tracking plus effort reward.",
+    ),
+    Formulation(
+        "F1_error_state_reward",
+        "Add Error",
+        (*BASELINE_FEATURES, "tracking_error"),
+        (_term("physics_error", "pos_error", 10.0, "tracking_error_m"),),
+        "Adds e = x_m - x_s to observation and an extra normalized e^2 reward penalty.",
+    ),
+    Formulation(
+        "F2_error_dot_state_reward",
+        "Add Error Dot",
+        (*BASELINE_FEATURES, "tracking_error", "velocity_error"),
+        (
+            _term("physics_error", "pos_error", 10.0, "tracking_error_m"),
+            _term("physics_error_dot", "velocity_error", 2.0, "velocity_error_mps"),
+        ),
+        "Adds e and edot to observation and reward.",
+    ),
+    Formulation(
+        "F3_error_ddot_state_reward",
+        "Add Error DDot",
+        (*BASELINE_FEATURES, "tracking_error", "velocity_error", "acceleration_error"),
+        (
+            _term("physics_error", "pos_error", 10.0, "tracking_error_m"),
+            _term("physics_error_dot", "velocity_error", 2.0, "velocity_error_mps"),
+            _term("physics_error_ddot", "acceleration_error", 0.5, "acceleration_error_mps2"),
+        ),
+        "Adds e, edot, and eddot to observation and reward.",
+    ),
+    Formulation(
+        "F4_accel_state",
+        "Accel State",
+        (*BASELINE_FEATURES, "x_m_ddot", "x_s_ddot"),
+        (),
+        "Adds xddot_m and xddot_s to observation only.",
+    ),
+    Formulation(
+        "F5_accel_state_reward",
+        "Accel State + Reward",
+        (*BASELINE_FEATURES, "x_m_ddot", "x_s_ddot"),
+        (_term("acceleration_error", "acceleration_error", 0.5, "acceleration_error_mps2"),),
+        "Adds xddot_m and xddot_s to observation plus an acceleration-error reward term.",
+    ),
+    Formulation(
+        "F6_effort_plus_delta_u",
+        "Effort + Delta U",
+        BASELINE_FEATURES,
+        (_term("smooth_delta_u", "action_delta", 0.05, "action_delta_voltage_v"),),
+        "Baseline state and reward plus smoothness penalty delta_u = u_t - u_{t-1}.",
+    ),
+)
+
+
+SUMMARY_FIELDS = (
+    "key",
+    "label",
+    "obs_dim",
+    "state_features",
+    "reward_terms",
+    "mean_reward",
+    "tracking_rmse_m",
+    "tracking_mae_m",
+    "tracking_max_abs_m",
+    "velocity_error_rmse_mps",
+    "acceleration_error_rmse_mps2",
+    "transparency_ratio_mean",
+    "transparency_ratio_rmse",
+    "transparency_ratio_error_rmse",
+    "mean_abs_u_v",
+    "rms_u_v",
+    "control_energy_v2_s",
+    "mean_abs_delta_u_v",
+    "rms_delta_u_v",
+    "saturation_fraction",
+    "completed_episode_rate",
+    "invalid_episode_rate",
+    "tensorboard_dir",
+    "out_dir",
+    "note",
+)
+
+
+def build_reward_spec(formulation: Formulation) -> dict[str, Any]:
+    terms = [dict(term) for term in BASE_REWARD_TERMS]
+    terms.extend(dict(term) for term in formulation.extra_terms)
+    return {
+        "name": f"{formulation.key}_reward",
+        "description": f"Physics-informed reward for {formulation.key}.",
+        "scale_catalog": {
+            "tracking_error_m": {"value": DEFAULT_TRACKING_SCALE_M, "unit": "m"},
+            "tracking_failure_threshold_m": {"value": float(cfg.POS_ERROR_FAIL_THRESHOLD), "unit": "m"},
+            "velocity_error_mps": {"value": DEFAULT_VELOCITY_ERROR_SCALE_MPS, "unit": "m/s"},
+            "acceleration_error_mps2": {"value": _acceleration_scale(), "unit": "m/s^2"},
+            "action_voltage_v": {"value": DEFAULT_ACTION_SCALE_V, "unit": "V"},
+            "action_delta_voltage_v": {"value": DEFAULT_ACTION_DELTA_SCALE_V, "unit": "V"},
+        },
+        "terms": terms,
+        "weights": {
+            "tracking": 0.0,
+            "transparency": 0.0,
+            "velocity": 0.0,
+            "force_difference": 0.0,
+            "effort": 0.0,
+            "jerk": 0.0,
+        },
+        "penalties": {
+            "stroke_limit": 250.0,
+            "invalid_state": 100.0,
+            "tracking_error_fail": 1000.0,
+            "edge_buffer_m": 0.0,
+            "low_force_threshold_n": 0.0,
+        },
+    }
+
+
+def build_state_spec(formulation: Formulation) -> dict[str, Any]:
+    return {
+        "name": f"{formulation.key}_state",
+        "description": formulation.note,
+        "selected_features": list(formulation.state_features),
+    }
+
+
+def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(SUMMARY_FIELDS))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in SUMMARY_FIELDS})
+
+
+def load_json(path: str | Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _load_training_npz(run_dir: str | Path) -> dict[str, np.ndarray]:
+    path = Path(run_dir) / "l" / "train.npz"
+    if not path.exists():
+        return {}
+    data = np.load(path)
+    return {key: data[key] for key in data.files}
+
+
+def _load_episode_npz(run_dir: str | Path, filename: str = "test.npz") -> dict[str, Any]:
+    path = Path(run_dir) / "e" / filename
+    if not path.exists():
+        return {}
+    data = np.load(path, allow_pickle=True)
+    return {key: data[key] for key in data.files}
+
+
+def _use_symlog_if_needed(ax, values: list[float] | np.ndarray, *, linthresh: float = 1.0) -> None:
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size and float(np.nanmax(np.abs(arr))) > 100.0:
+        ax.set_yscale("symlog", linthresh=linthresh)
+
+
+def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    labels = [str(row["key"]).replace("_", "\n") for row in rows]
+    x = np.arange(len(rows))
+    metrics = [
+        ("tracking_rmse_m", "Tracking RMSE [mm]", 1000.0),
+        ("transparency_ratio_mean", "Actual transparency ratio mean: x_m / x_s", 1.0),
+        ("rms_u_v", "RMS u_v [V]", 1.0),
+        ("mean_abs_delta_u_v", "Mean |delta u| [V]", 1.0),
+    ]
+    fig, axes = plt.subplots(len(metrics), 1, figsize=(14, 14), constrained_layout=True)
+    for ax, (key, ylabel, scale) in zip(axes, metrics):
+        values = [float(row.get(key, 0.0)) * scale for row in rows]
+        ax.bar(x, values, color="tab:blue", alpha=0.78)
+        if key == "transparency_ratio_mean":
+            ax.axhline(1.0, color="tab:red", lw=1.2, ls="--", alpha=0.85, label="ideal ratio = 1")
+            _use_symlog_if_needed(ax, values)
+            ax.legend(loc="best", fontsize=8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=0, fontsize=8)
+        ax.set_ylabel(ylabel)
+        ax.grid(axis="y", alpha=0.25)
+    axes[0].set_title("Physics-informed formulation comparison")
+    fig.savefig(root / "summary_bars.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), constrained_layout=True)
+    for row in rows:
+        train = _load_training_npz(row["out_dir"])
+        if not train:
+            continue
+        eval_steps = train.get("eval_steps", np.asarray([], dtype=np.float64))
+        if eval_steps.size == 0:
+            continue
+        axes[0].plot(eval_steps, train.get("eval_tracking_rmse", np.asarray([])) * 1000.0, marker="o", label=row["key"])
+        axes[1].plot(eval_steps, train.get("eval_transparency_rmse", np.asarray([])), marker="o", label=row["key"])
+        axes[2].plot(eval_steps, train.get("eval_mean_reward", np.asarray([])), marker="o", label=row["key"])
+    axes[0].set_ylabel("Eval tracking RMSE [mm]")
+    axes[1].set_ylabel("Eval actual ratio x_m / x_s")
+    axes[1].axhline(1.0, color="tab:red", lw=1.1, ls="--", alpha=0.85, label="ideal ratio = 1")
+    all_eval_ratios = [
+        value
+        for row in rows
+        for value in np.asarray(_load_training_npz(row["out_dir"]).get("eval_transparency_rmse", []), dtype=np.float64).tolist()
+    ]
+    _use_symlog_if_needed(axes[1], all_eval_ratios)
+    axes[2].set_ylabel("Eval return")
+    axes[2].set_xlabel("Completed training episodes")
+    for ax in axes:
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="best", fontsize=8)
+    fig.savefig(root / "learning_curves.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    plot_transparency_ratio_rollouts(root, rows)
+
+
+def plot_transparency_ratio_rollouts(root: Path, rows: list[dict[str, Any]]) -> None:
+    fig, ax = plt.subplots(figsize=(14, 7), constrained_layout=True)
+    plotted = False
+    all_values: list[float] = []
+    for row in rows:
+        history = _load_episode_npz(row["out_dir"])
+        if not history:
+            continue
+        time_s = history_array(history, "time", dtype=np.float64)
+        ratio = transparency_ratio_array(history)
+        n = min(time_s.size, ratio.size)
+        if n == 0:
+            continue
+        time_s = time_s[:n]
+        ratio = ratio[:n]
+        finite = np.isfinite(time_s) & np.isfinite(ratio)
+        if not np.any(finite):
+            continue
+        time_s = time_s[finite]
+        ratio = ratio[finite]
+        ax.plot(time_s, ratio, lw=1.35, alpha=0.85, label=str(row["key"]))
+        all_values.extend(ratio.tolist())
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return
+    ax.axhline(1.0, color="black", lw=1.2, ls="--", alpha=0.8, label="ideal ratio = 1")
+    _use_symlog_if_needed(ax, all_values)
+    ax.set_title("Actual transparency ratio over evaluation rollouts")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("x_m / x_s")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+    fig.savefig(root / "transparency_ratio_rollouts.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_root: Path) -> None:
+    lines = [
+        "# Physics-Informed Formulation Study",
+        "",
+        f"TensorBoard root: `{tensorboard_root}`",
+        "",
+        "Transparency is reported as the actual position ratio `x_m / x_s`; the ideal value is `1.0`.",
+        "",
+        "| Formulation | Track RMSE mm | Actual transp ratio mean | Ratio error RMSE | RMS u V | Mean abs(delta u) V | Completed |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| {key} | {track:.3f} | {ratio:.4f} | {trans_err:.4f} | {rms_u:.3f} | {du:.3f} | {done:.2f} |".format(
+                key=row["key"],
+                track=1000.0 * float(row.get("tracking_rmse_m", 0.0)),
+                ratio=float(row.get("transparency_ratio_mean", 0.0)),
+                trans_err=float(row.get("transparency_ratio_error_rmse", 0.0)),
+                rms_u=float(row.get("rms_u_v", 0.0)),
+                du=float(row.get("mean_abs_delta_u_v", 0.0)),
+                done=float(row.get("completed_episode_rate", 0.0)),
+            )
+        )
+    lines.extend([
+        "",
+        "Generated artifacts:",
+        "",
+        "- `summary.csv`: flat metric table",
+        "- `summary_bars.png`: final metric comparison with actual transparency ratio",
+        "- `learning_curves.png`: evaluation checkpoints across training",
+        "- `transparency_ratio_rollouts.png`: actual `x_m / x_s` over reevaluated rollouts",
+    ])
+    (root / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def row_from_summary(formulation: Formulation, summary: dict[str, Any]) -> dict[str, Any]:
+    eval_metrics = dict(summary.get("eval_metrics") or {})
+    row = {
+        "key": formulation.key,
+        "label": formulation.label,
+        "obs_dim": int(summary.get("obs_dim", len(formulation.state_features))),
+        "state_features": " ".join(formulation.state_features),
+        "reward_terms": " ".join(term["name"] for term in (BASE_REWARD_TERMS + formulation.extra_terms)),
+        "note": formulation.note,
+    }
+    for key in SUMMARY_FIELDS:
+        if key in row:
+            continue
+        if key in summary:
+            row[key] = summary[key]
+        elif key in eval_metrics:
+            row[key] = eval_metrics[key]
+    row["completed_episode_rate"] = eval_metrics.get("completed_episode_rate", summary.get("completed_episode_rate", 0.0))
+    return row
+
+
+def _summary_path_for(root: Path, formulation: Formulation) -> Path:
+    return root / formulation.key / "ppo" / "l" / "summary.json"
+
+
+def _out_dir_for(root: Path, formulation: Formulation) -> Path:
+    return root / formulation.key / "ppo"
+
+
+def _env_kwargs_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    reset_options = dict(summary.get("reset_options") or {})
+    env_kwargs: dict[str, Any] = {
+        "episode_duration": float(summary.get("episode_duration", cfg.EPISODE_DURATION)),
+        "env_switch_time": float(summary.get("env_switch_time", cfg.PAPER_ENV_SWITCH_TIME)),
+        "terminate_on_error": bool(summary.get("terminate_on_error", True)),
+        "legacy_baseline_env": bool(reset_options.get("legacy_baseline_env", False)),
+        "enforce_stroke_limit": bool(summary.get("enforce_stroke_limit", True)),
+        "stroke_limit_mode": str(summary.get("stroke_limit_mode", reset_options.get("stroke_limit_mode", "clamp"))),
+        "reset_position_mode": str(reset_options.get("reset_position_mode", "midpoint")),
+        "reset_options": reset_options,
+    }
+    if summary.get("action_levels") is not None:
+        env_kwargs["action_levels"] = [float(level) for level in summary["action_levels"]]
+    return env_kwargs
+
+
+def _load_ppo_model(model_path: str | Path):
+    require_sb3()
+    from stable_baselines3 import PPO
+
+    return PPO.load(str(model_path))
+
+
+def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, float], *, test_episodes: int) -> dict[str, Any]:
+    summary = dict(summary)
+    summary["test_episodes"] = int(test_episodes)
+    summary["evaluation_history_mode"] = "mean_over_test_episodes_eval_only"
+    summary["eval_metrics"] = dict(eval_metrics)
+    summary["mean_reward"] = float(eval_metrics.get("mean_reward", summary.get("mean_reward", 0.0)))
+    summary["tracking_rmse_m"] = float(eval_metrics.get("tracking_rmse_m", summary.get("tracking_rmse_m", 0.0)))
+    summary["transparency_rmse_w"] = float(eval_metrics.get("transparency_ratio_mean", summary.get("transparency_rmse_w", 0.0)))
+    summary["pre_switch_tracking_rmse_m"] = float(
+        eval_metrics.get("pre_switch_tracking_rmse_m", summary.get("pre_switch_tracking_rmse_m", 0.0))
+    )
+    summary["post_switch_tracking_rmse_m"] = float(
+        eval_metrics.get("post_switch_tracking_rmse_m", summary.get("post_switch_tracking_rmse_m", 0.0))
+    )
+    summary["pre_switch_transparency_rmse_w"] = float(
+        eval_metrics.get("pre_switch_transparency_ratio_mean", summary.get("pre_switch_transparency_rmse_w", 0.0))
+    )
+    summary["post_switch_transparency_rmse_w"] = float(
+        eval_metrics.get("post_switch_transparency_ratio_mean", summary.get("post_switch_transparency_rmse_w", 0.0))
+    )
+    summary["invalid_episode_rate"] = float(eval_metrics.get("invalid_episode", summary.get("invalid_episode_rate", 0.0)))
+    for key in SUMMARY_FIELDS:
+        if key in eval_metrics:
+            summary[key] = float(eval_metrics[key])
+    for key in (
+        "tracking_mae_m",
+        "tracking_max_abs_m",
+        "velocity_error_rmse_mps",
+        "acceleration_error_rmse_mps2",
+        "transparency_ratio_mean",
+        "transparency_ratio_rmse",
+        "transparency_ratio_error_rmse",
+        "mean_abs_u_v",
+        "rms_u_v",
+        "control_energy_v2_s",
+        "max_abs_u_v",
+        "saturation_fraction",
+        "mean_abs_delta_u_v",
+        "rms_delta_u_v",
+        "max_abs_delta_u_v",
+        "completed_episode_rate",
+    ):
+        if key in eval_metrics:
+            summary[key] = float(eval_metrics[key])
+    return summary
+
+
+def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
+    root = policy_gradient_suite_root(args.fe_mode, args.study_name)
+    specs_root = root / "specs"
+    rows: list[dict[str, Any]] = []
+    for index, formulation in enumerate(FORMULATIONS, start=1):
+        summary_path = _summary_path_for(root, formulation)
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Missing trained summary for {formulation.key}: {summary_path}")
+
+        summary = load_json(summary_path)
+        model_path = Path(str(summary.get("model_path") or (_out_dir_for(root, formulation) / "m" / "ppo_model.zip")))
+        if not model_path.exists():
+            raise FileNotFoundError(f"Missing PPO model for {formulation.key}: {model_path}")
+
+        state_spec_path = specs_root / f"{formulation.key}_state.json"
+        reward_spec_path = specs_root / f"{formulation.key}_reward.json"
+        state_spec = load_json(state_spec_path) if state_spec_path.exists() else build_state_spec(formulation)
+        reward_spec = load_json(reward_spec_path) if reward_spec_path.exists() else build_reward_spec(formulation)
+
+        env_kwargs = _env_kwargs_from_summary(summary)
+        state_variant = build_custom_dqn_state_variant_from_spec(state_spec)
+        reward_variant = reward_variant_from_spec(reward_spec)
+        env_factory = build_policy_gradient_env_factory(
+            algo=str(summary.get("algo", PG_ALGO_PPO_CONTINUOUS)),
+            env_mode=str(summary.get("env_mode", args.env_mode)),
+            env_kwargs=env_kwargs,
+            state_variant=state_variant,
+            reward_variant=reward_variant,
+        )
+        print(f"[{index}/{len(FORMULATIONS)}] evaluate {formulation.key}: {model_path}", flush=True)
+        model = _load_ppo_model(model_path)
+        eval_metrics, history = evaluate_policy_gradient(
+            model,
+            env_factory,
+            n_episodes=args.test_episodes,
+            seed_offset=args.eval_seed_offset,
+            reset_options_schedule=summary.get("eval_reset_options_schedule") or None,
+        )
+
+        out_dir = _out_dir_for(root, formulation)
+        save_history_npz(history, out_dir / "e" / "test.npz")
+        save_history_npz(history, out_dir / "e" / "test_reeval.npz")
+        save_policy_gradient_visuals(
+            history,
+            out_dir / "p",
+            f"{formulation.key}_{formulation.label}_reeval",
+            env_switch_time=float(env_kwargs["env_switch_time"]),
+            action_mode="continuous",
+            action_levels=summary.get("action_levels", cfg.V_LEVELS),
+        )
+
+        updated_summary = _update_summary_with_eval(summary, eval_metrics, test_episodes=args.test_episodes)
+        save_json(summary_path, updated_summary)
+        rows.append(row_from_summary(formulation, updated_summary))
+        write_summary_csv(root / "summary.csv", rows)
+        plot_summary(root, rows)
+
+    tensorboard_root = Path.home() / "AppData" / "Local" / "TeleopWithRL_tb" / root.relative_to(Path(__file__).resolve().parents[2])
+    write_summary_csv(root / "summary.csv", rows)
+    plot_summary(root, rows)
+    write_summary_markdown(root, rows, tensorboard_root)
+    save_json(root / "study_manifest.json", {"rows": rows, "tensorboard_root": str(tensorboard_root)})
+    print(f"summary_csv={root / 'summary.csv'}", flush=True)
+    print(f"summary_md={root / 'summary.md'}", flush=True)
+    print(f"transparency_ratio_rollouts={root / 'transparency_ratio_rollouts.png'}", flush=True)
+    print(f"tensorboard_root={tensorboard_root}", flush=True)
+    return rows
+
+
+def run(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if args.eval_only:
+        return reevaluate_existing(args)
+
+    root = policy_gradient_suite_root(args.fe_mode, args.study_name)
+    root.mkdir(parents=True, exist_ok=True)
+    specs_root = root / "specs"
+    specs_root.mkdir(parents=True, exist_ok=True)
+
+    env_args = SimpleNamespace(
+        episode_duration=args.episode_duration,
+        env_switch_time=args.env_switch_time,
+        disable_terminate_on_error=args.disable_terminate_on_error,
+        legacy_baseline_env=False,
+        disable_stroke_limit=False,
+        stroke_limit_mode=args.stroke_limit_mode,
+        reset_position_mode=args.reset_position_mode,
+        action_levels=None,
+        force_amp=args.force_amp,
+        force_bias=args.force_bias,
+        force_freq_rad=args.force_freq_rad,
+        force_phase=args.force_phase,
+        force_waveform=args.force_waveform,
+        fe_mode=args.fe_mode,
+    )
+    env_kwargs = replica_env_kwargs_from_args(env_args)
+
+    rows: list[dict[str, Any]] = []
+    for index, formulation in enumerate(FORMULATIONS, start=1):
+        state_spec = build_state_spec(formulation)
+        reward_spec = build_reward_spec(formulation)
+        state_spec_path = specs_root / f"{formulation.key}_state.json"
+        reward_spec_path = specs_root / f"{formulation.key}_reward.json"
+        save_json(state_spec_path, state_spec)
+        save_json(reward_spec_path, reward_spec)
+
+        out_dir = root / formulation.key / "ppo"
+        summary_path = out_dir / "l" / "summary.json"
+        if args.skip_existing and summary_path.exists():
+            summary = load_json(summary_path)
+            print(f"[{index}/{len(FORMULATIONS)}] skip existing {formulation.key}: {summary_path}", flush=True)
+        else:
+            print(f"[{index}/{len(FORMULATIONS)}] train {formulation.key}: {formulation.note}", flush=True)
+            result = train_policy_gradient_variant(
+                algo=PG_ALGO_PPO_CONTINUOUS,
+                out_dir=out_dir,
+                env_mode=args.env_mode,
+                env_kwargs=env_kwargs,
+                state_variant=build_custom_dqn_state_variant_from_spec(state_spec),
+                reward_variant=reward_variant_from_spec(reward_spec),
+                total_episodes=args.train_episodes,
+                test_episodes=args.test_episodes,
+                seed=args.seed,
+                label=f"{formulation.key}_{formulation.label}",
+                total_timesteps=args.total_timesteps,
+                parallel_envs=args.parallel_envs,
+                eval_every_episodes=args.eval_every_episodes,
+                vec_env_type=args.vec_env,
+                ppo_n_steps=args.ppo_n_steps,
+                ppo_batch_size=args.ppo_batch_size,
+                ppo_n_epochs=args.ppo_n_epochs,
+                ppo_device=args.ppo_device,
+                train_reset_options_pool=None,
+                eval_reset_options_schedule=None,
+            )
+            summary = load_json(Path(result.out_dir) / "l" / "summary.json")
+        rows.append(row_from_summary(formulation, summary))
+        write_summary_csv(root / "summary.csv", rows)
+        plot_summary(root, rows)
+
+    tensorboard_root = Path.home() / "AppData" / "Local" / "TeleopWithRL_tb" / root.relative_to(Path(__file__).resolve().parents[2])
+    write_summary_csv(root / "summary.csv", rows)
+    plot_summary(root, rows)
+    write_summary_markdown(root, rows, tensorboard_root)
+    save_json(root / "study_manifest.json", {"rows": rows, "tensorboard_root": str(tensorboard_root)})
+    print(f"summary_csv={root / 'summary.csv'}", flush=True)
+    print(f"summary_md={root / 'summary.md'}", flush=True)
+    print(f"tensorboard_root={tensorboard_root}", flush=True)
+    return rows
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run physics-informed PPO formulation comparisons.")
+    parser.add_argument("--study-name", default="physics_informed_formulations_01")
+    parser.add_argument("--env-mode", default=cfg.ENV_MODE_CHANGING, choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING])
+    parser.add_argument("--fe-mode", default=FE_MODE_DYNAMICS)
+    parser.add_argument("--episode-duration", type=float, default=30.0)
+    parser.add_argument("--env-switch-time", type=float, default=10.0)
+    parser.add_argument("--reset-position-mode", default="midpoint", choices=["midpoint", "zero"])
+    parser.add_argument("--stroke-limit-mode", default="clamp", choices=["terminate", "clamp"])
+    parser.add_argument("--force-amp", type=float, default=10.0)
+    parser.add_argument("--force-bias", type=float, default=0.0)
+    parser.add_argument("--force-freq-rad", type=float, default=1.0)
+    parser.add_argument("--force-phase", type=float, default=0.0)
+    parser.add_argument("--force-waveform", default="sine", choices=["sine", "cosine", "square", "ramp", "multisine"])
+    parser.add_argument("--train-episodes", type=int, default=64)
+    parser.add_argument("--total-timesteps", type=int, default=24576)
+    parser.add_argument("--test-episodes", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--parallel-envs", type=int, default=4)
+    parser.add_argument("--vec-env", choices=["auto", "dummy", "subproc"], default="dummy")
+    parser.add_argument("--ppo-n-steps", type=int, default=128)
+    parser.add_argument("--ppo-batch-size", type=int, default=256)
+    parser.add_argument("--ppo-n-epochs", type=int, default=3)
+    parser.add_argument("--ppo-device", choices=["cpu", "cuda", "auto"], default="auto")
+    parser.add_argument("--eval-every-episodes", type=int, default=8)
+    parser.add_argument("--eval-only", action="store_true", help="Load saved PPO models and rerun deterministic test evaluations.")
+    parser.add_argument("--eval-seed-offset", type=int, default=30_000)
+    parser.add_argument("--disable-terminate-on-error", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    run(parse_args())
+
+
+if __name__ == "__main__":
+    main()
