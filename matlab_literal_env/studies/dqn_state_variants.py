@@ -191,6 +191,16 @@ def _absolute_posvel_only(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
     return _arr([x_m, x_s, v_m, v_s])
 
 
+def _absolute_posvel_error_control_effort(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
+    x_m = _info_float(info, "x_m") / _safe_scale(cfg.OBS_SCALE_POS)
+    x_s = _info_float(info, "x_s") / _safe_scale(cfg.OBS_SCALE_POS)
+    tracking_error = _info_float(info, "pos_error", x_m - x_s) / _safe_scale(cfg.OBS_SCALE_POS)
+    v_s = float(obs[2])
+    v_m = float(obs[3])
+    u_v = _info_float(info, "u_v") / _action_scale()
+    return _arr([x_m, x_s, tracking_error, v_m, v_s, u_v])
+
+
 def _coupled_pressure_errors_plus_forces(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
     pressure_error_ch1 = float(obs[6] - obs[4])  # P_m1 - P_s1
     pressure_error_ch2 = float(obs[7] - obs[5])  # P_m2 - P_s2
@@ -385,9 +395,15 @@ _CUSTOM_STATE_FEATURES: dict[str, StateFeatureSpec] = {
     ),
     "transparency_error": StateFeatureSpec(
         "transparency_error",
-        "Position transparency ratio x_m / x_s; ideal value is 1.",
+        "Stable force/velocity transparency error; zero means F_h/v_m equals F_e/v_s.",
+        "(F_e*v_m - F_h*v_s) / MAX_POWER_ERROR",
+        lambda obs, info: _info_float(info, "transparency_error") / _safe_scale(cfg.MAX_POWER_ERROR),
+    ),
+    "transparency_ratio": StateFeatureSpec(
         "transparency_ratio",
-        lambda obs, info: _info_float(info, "transparency_ratio", _info_float(info, "transparency_error")),
+        "Actual force/velocity transparency ratio; ideal value is 1.",
+        "(F_h/v_m)/(F_e/v_s)",
+        lambda obs, info: _info_float(info, "transparency_ratio", 1.0),
     ),
     "u_v": StateFeatureSpec(
         "u_v",
@@ -498,6 +514,45 @@ def build_custom_dqn_state_variant(
     )
 
 
+def _parse_temporal_lags(spec: Mapping[str, Any]) -> tuple[int, ...]:
+    temporal = spec.get("temporal_stack", spec.get("temporal_observation_stack", spec.get("history", None)))
+    if not temporal:
+        return ()
+
+    if isinstance(temporal, Mapping):
+        enabled = bool(temporal.get("enabled", True))
+        if not enabled:
+            return ()
+        if "lags" in temporal:
+            raw_lags = temporal["lags"]
+        elif "lag_steps" in temporal:
+            raw_lags = temporal["lag_steps"]
+        else:
+            frame_count = int(temporal.get("frame_count", temporal.get("frames", temporal.get("num_frames", 1))))
+            raw_lags = range(max(1, frame_count))
+    elif isinstance(temporal, bool):
+        raw_lags = range(2) if temporal else ()
+    elif isinstance(temporal, int):
+        raw_lags = range(max(1, int(temporal)))
+    else:
+        raw_lags = temporal
+
+    lags = sorted({int(lag) for lag in raw_lags})
+    if any(lag < 0 for lag in lags):
+        raise ValueError(f"Temporal state lags must be non-negative, got {lags}.")
+    if 0 not in lags:
+        lags.insert(0, 0)
+    return tuple(lags)
+
+
+def _temporal_feature_names(base_features: tuple[str, ...], lags: tuple[int, ...]) -> tuple[str, ...]:
+    names: list[str] = []
+    for lag in lags:
+        suffix = "t" if lag == 0 else f"t-{lag}"
+        names.extend(f"{feature}@{suffix}" for feature in base_features)
+    return tuple(names)
+
+
 def _features_from_spec(spec: Mapping[str, Any]) -> list[str]:
     if "selected_features" in spec:
         features = spec["selected_features"]
@@ -515,6 +570,42 @@ def build_custom_dqn_state_variant_from_spec(spec: Mapping[str, Any]) -> DQNStat
     selected = _features_from_spec(spec)
     name = str(spec.get("name") or "custom_state")
     description = str(spec.get("description") or "Notebook-defined custom state.")
+    temporal_lags = _parse_temporal_lags(spec)
+    if temporal_lags:
+        base_variant = build_custom_dqn_state_variant(
+            name=f"{name}_base",
+            feature_names=selected,
+            description=description,
+            metadata={
+                "kind": "custom_state_spec_base",
+                "selected_features": selected,
+                "source_spec": dict(spec),
+            },
+        )
+        expanded_features = _temporal_feature_names(tuple(base_variant.feature_names), temporal_lags)
+
+        def _extractor(obs: np.ndarray, info: dict[str, Any]) -> np.ndarray:
+            current = np.asarray(base_variant.extractor(obs, info), dtype=np.float32).reshape(-1)
+            return np.concatenate([current for _ in temporal_lags]).astype(np.float32, copy=False)
+
+        return DQNStateVariant(
+            name=name,
+            feature_names=expanded_features,
+            description=f"{description} Temporal stack lags: {list(temporal_lags)}.",
+            extractor=_extractor,
+            metadata={
+                "kind": "temporal_custom_state_spec",
+                "selected_features": list(expanded_features),
+                "base_feature_names": list(base_variant.feature_names),
+                "base_obs_dim": int(base_variant.obs_dim),
+                "temporal_stack": {
+                    "lags": list(temporal_lags),
+                    "reset_fill": "repeat_current",
+                },
+                "source_spec": dict(spec),
+            },
+        )
+
     metadata = {
         "kind": "custom_state_spec",
         "selected_features": selected,
@@ -670,6 +761,12 @@ def build_dqn_state_variants() -> list[DQNStateVariant]:
             feature_names=("x_m", "x_s", "v_m", "v_s"),
             description="Absolute master/slave positions and velocities only; force cues removed.",
             extractor=_absolute_posvel_only,
+        ),
+        DQNStateVariant(
+            name="S13_absolute_posvel_error_control_effort",
+            feature_names=("x_m", "x_s", "tracking_error", "v_m", "v_s", "u_v"),
+            description="Legacy PPO baseline state: absolute positions, tracking error, velocities, and previous voltage.",
+            extractor=_absolute_posvel_error_control_effort,
         ),
     ]
 

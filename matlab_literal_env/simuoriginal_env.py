@@ -44,6 +44,47 @@ def position_transparency_ratio(x_m: float, x_s: float, eps: float = 1e-9) -> fl
     return float(x_m / (eps if x_s >= 0.0 else -eps))
 
 
+def _stable_divide(numerator: float, denominator: float, eps: float = 1e-9) -> float:
+    numerator = float(numerator)
+    denominator = float(denominator)
+    eps = abs(float(eps))
+    if abs(denominator) >= eps:
+        return float(numerator / denominator)
+    if abs(numerator) < eps:
+        return 0.0
+    return float(numerator / (eps if denominator >= 0.0 else -eps))
+
+
+def force_velocity_impedance(force: float, velocity: float, eps: float = 1e-9) -> float:
+    """Return the force/velocity impedance with a finite zero-velocity fallback."""
+
+    return _stable_divide(force, velocity, eps=eps)
+
+
+def force_velocity_transparency_ratio(
+    f_h: float,
+    v_m: float,
+    f_e: float,
+    v_s: float,
+    eps: float = 1e-9,
+) -> float:
+    """Return the legacy transparency ratio (F_h / v_m) / (F_e / v_s)."""
+
+    human_impedance = force_velocity_impedance(f_h, v_m, eps=eps)
+    environment_impedance = force_velocity_impedance(f_e, v_s, eps=eps)
+    if abs(environment_impedance) >= eps:
+        return float(human_impedance / environment_impedance)
+    if abs(human_impedance - environment_impedance) < eps:
+        return 1.0
+    return float(human_impedance / (eps if environment_impedance >= 0.0 else -eps))
+
+
+def force_velocity_transparency_error(f_h: float, v_m: float, f_e: float, v_s: float) -> float:
+    """Return the stable impedance-matching error for F_h/v_m = F_e/v_s."""
+
+    return float((float(f_e) * float(v_m)) - (float(f_h) * float(v_s)))
+
+
 def _normalize_action_levels(action_levels: list[float] | tuple[float, ...] | np.ndarray | None) -> np.ndarray:
     if action_levels is None:
         levels = np.asarray(cfg.V_LEVELS, dtype=np.float64)
@@ -648,6 +689,10 @@ class SimuOriginalReplicaEnv(gym.Env):
             "pos_error": [],
             "transparency_ratio": [],
             "transparency_error": [],
+            "transparency_ratio_error": [],
+            "position_transparency_ratio": [],
+            "human_force_velocity_impedance": [],
+            "environment_force_velocity_impedance": [],
             "reward_track": [],
             "reward_effort": [],
             "reward_transparency": [],
@@ -668,8 +713,22 @@ class SimuOriginalReplicaEnv(gym.Env):
             return
         x_m_centered, x_s_centered = self.get_centered_positions()
         pos_error = float(self.state[self.IX_XM] - self.state[self.IX_XS])
-        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
-        transparency_error = float(transparency_ratio - 1.0)
+        human_impedance = force_velocity_impedance(self.F_h, self.state[self.IX_VM])
+        environment_impedance = force_velocity_impedance(self.F_e, self.state[self.IX_VS])
+        transparency_ratio = force_velocity_transparency_ratio(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        position_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
+        transparency_error = force_velocity_transparency_error(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        transparency_ratio_error = float(transparency_ratio - 1.0)
         self._history["time"].append(self.t)
         self._history["x_m"].append(self.state[self.IX_XM])
         self._history["x_s"].append(self.state[self.IX_XS])
@@ -698,6 +757,10 @@ class SimuOriginalReplicaEnv(gym.Env):
         self._history["pos_error"].append(pos_error)
         self._history["transparency_ratio"].append(transparency_ratio)
         self._history["transparency_error"].append(transparency_error)
+        self._history["transparency_ratio_error"].append(transparency_ratio_error)
+        self._history["position_transparency_ratio"].append(position_ratio)
+        self._history["human_force_velocity_impedance"].append(human_impedance)
+        self._history["environment_force_velocity_impedance"].append(environment_impedance)
         self._history["reward_track"].append(track_term)
         self._history["reward_effort"].append(effort_term)
         self._history["reward_transparency"].append(transparency_term)
@@ -756,9 +819,19 @@ class SimuOriginalReplicaEnv(gym.Env):
         norm_pos_error = float(
             np.clip(pos_error / cfg.MAX_POSITION_ERROR, -cfg.POS_ERR_NORM_CLIP, cfg.POS_ERR_NORM_CLIP)
         )
-        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
-        transparency_error = float(transparency_ratio - 1.0)
-        norm_transparency_error = transparency_error
+        transparency_ratio = force_velocity_transparency_ratio(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        transparency_error = force_velocity_transparency_error(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        norm_transparency_error = transparency_error / cfg.MAX_POWER_ERROR
         track_term = cfg.ALPHA_TRACKING * norm_pos_error ** 2
         effort_term = cfg.GAMMA_EFFORT * u_v ** 2
         transparency_term = cfg.BETA_TRANSPARENCY * norm_transparency_error ** 2
@@ -823,7 +896,21 @@ class SimuOriginalReplicaEnv(gym.Env):
 
     def _get_info(self) -> dict:
         x_m_centered, x_s_centered = self.get_centered_positions()
-        transparency_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
+        human_impedance = force_velocity_impedance(self.F_h, self.state[self.IX_VM])
+        environment_impedance = force_velocity_impedance(self.F_e, self.state[self.IX_VS])
+        transparency_ratio = force_velocity_transparency_ratio(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        transparency_error = force_velocity_transparency_error(
+            self.F_h,
+            self.state[self.IX_VM],
+            self.F_e,
+            self.state[self.IX_VS],
+        )
+        position_ratio = position_transparency_ratio(self.state[self.IX_XM], self.state[self.IX_XS])
         return {
             "time": self.t,
             "u_v": self.last_u_v,
@@ -847,7 +934,12 @@ class SimuOriginalReplicaEnv(gym.Env):
             "x_s_centered": x_s_centered,
             "pos_error": float(self.state[self.IX_XM] - self.state[self.IX_XS]),
             "transparency_ratio": transparency_ratio,
-            "transparency_error": transparency_ratio - 1.0,
+            "transparency_error": transparency_error,
+            "transparency_ratio_error": transparency_ratio - 1.0,
+            "transparency_definition": "error=(F_e*v_m)-(F_h*v_s); ratio=(F_h/v_m)/(F_e/v_s)",
+            "position_transparency_ratio": position_ratio,
+            "human_force_velocity_impedance": human_impedance,
+            "environment_force_velocity_impedance": environment_impedance,
             "step_count": self.step_count,
             "max_steps": self.max_steps,
             "episode_duration": self.episode_duration,

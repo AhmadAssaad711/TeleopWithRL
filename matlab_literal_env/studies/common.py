@@ -98,7 +98,34 @@ def history_array(history: dict[str, Any], key: str, dtype=np.float64) -> np.nda
         return np.asarray(values, dtype=object)
 
 
+def _stable_divide_array(numerator: np.ndarray, denominator: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    numerator = np.asarray(numerator, dtype=np.float64)
+    denominator = np.asarray(denominator, dtype=np.float64)
+    eps = abs(float(eps))
+    safe_denominator = np.where(
+        np.abs(denominator) >= eps,
+        denominator,
+        np.where(denominator >= 0.0, eps, -eps),
+    )
+    computed = numerator / safe_denominator
+    computed[(np.abs(denominator) < eps) & (np.abs(numerator) < eps)] = 0.0
+    return computed
+
+
 def transparency_ratio_array(history: dict[str, Any], suffix: str = "") -> np.ndarray:
+    f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
+    v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
+    f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
+    v_s = history_array(history, f"v_s{suffix}", dtype=np.float64)
+    n = min(f_h.size, v_m.size, f_e.size, v_s.size)
+    if n:
+        human_impedance = _stable_divide_array(f_h[:n], v_m[:n])
+        environment_impedance = _stable_divide_array(f_e[:n], v_s[:n])
+        computed = _stable_divide_array(human_impedance, environment_impedance)
+        matched_zero = (np.abs(environment_impedance) < 1e-9) & (np.abs(human_impedance - environment_impedance) < 1e-9)
+        computed[matched_zero] = 1.0
+        return computed.astype(np.float64, copy=False)
+
     ratio = history_array(history, f"transparency_ratio{suffix}", dtype=np.float64)
     if ratio.size:
         return ratio
@@ -116,6 +143,21 @@ def transparency_ratio_array(history: dict[str, Any], suffix: str = "") -> np.nd
     matched_zero = (np.abs(x_s) < eps) & (np.abs(x_m - x_s) < eps)
     computed[matched_zero] = 1.0
     return computed.astype(np.float64, copy=False)
+
+
+def transparency_power_error_array(history: dict[str, Any], suffix: str = "") -> np.ndarray:
+    f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
+    v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
+    f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
+    v_s = history_array(history, f"v_s{suffix}", dtype=np.float64)
+    n = min(f_h.size, v_m.size, f_e.size, v_s.size)
+    if n:
+        return ((f_e[:n] * v_m[:n]) - (f_h[:n] * v_s[:n])).astype(np.float64, copy=False)
+
+    error = history_array(history, f"transparency_error{suffix}", dtype=np.float64)
+    if error.size:
+        return error
+    return np.asarray([], dtype=np.float64)
 
 
 def json_default(value: Any):
@@ -287,6 +329,7 @@ def aggregate_episode_histories(histories: list[dict[str, Any]]) -> dict[str, An
 def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str, float]:
     rewards = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
+    transparency_power_error = transparency_power_error_array(history)
     transparency_ratio = transparency_ratio_array(history)
     transparency_error = transparency_ratio - 1.0
     f_h = history_array(history, "F_h", dtype=np.float64)
@@ -335,7 +378,7 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
         "velocity_error_rmse_mps": _rmse(velocity_error),
         "acceleration_error_rmse_mps2": _rmse(acceleration_error),
         "force_rmse_n": _rmse(force_error),
-        "transparency_rmse_w": transparency_ratio_mean,
+        "transparency_rmse_w": _rmse(transparency_power_error),
         "transparency_ratio_mean": transparency_ratio_mean,
         "transparency_ratio_rmse": _rmse(transparency_ratio),
         "transparency_ratio_error_rmse": _rmse(transparency_error),
@@ -351,8 +394,8 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
         "post_switch_tracking_rmse_m": _rmse(pos_error, post_mask),
         "pre_switch_force_rmse_n": _rmse(force_error, pre_mask),
         "post_switch_force_rmse_n": _rmse(force_error, post_mask),
-        "pre_switch_transparency_rmse_w": _mean(transparency_ratio, pre_mask),
-        "post_switch_transparency_rmse_w": _mean(transparency_ratio, post_mask),
+        "pre_switch_transparency_rmse_w": _rmse(transparency_power_error, pre_mask),
+        "post_switch_transparency_rmse_w": _rmse(transparency_power_error, post_mask),
         "pre_switch_transparency_ratio_mean": _mean(transparency_ratio, pre_mask),
         "post_switch_transparency_ratio_mean": _mean(transparency_ratio, post_mask),
         "invalid_episode": float(np.any(invalid > 0.0)),
@@ -444,8 +487,8 @@ def save_training_plot(
             ms=3.5,
             color="black",
         )
-    axes[2].set_ylabel("Transp ratio")
-    axes[2].set_title(f"{title}: transparency ratio")
+    axes[2].set_ylabel("Transp [W]")
+    axes[2].set_title(f"{title}: transparency RMSE")
     axes[2].grid(True, alpha=0.3)
     axes[2].set_xlabel("Episode")
 
@@ -547,7 +590,7 @@ def plot_rollout_dashboard(history: dict[str, Any], out_path: str | Path, title:
         label="Transparency ratio",
     )[0]
     axes[2].set_ylabel("Track [mm]", color="tab:purple")
-    twin.set_ylabel("x_m / x_s", color="tab:brown")
+    twin.set_ylabel("(F_h/v_m) / (F_e/v_s)", color="tab:brown")
     axes[2].tick_params(axis="y", colors="tab:purple")
     twin.tick_params(axis="y", colors="tab:brown")
     axes[2].set_title("Tracking error (purple) and transparency ratio (brown)")
@@ -583,6 +626,7 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
 
     pos_error_mm = history_array(history, "pos_error", dtype=np.float64) * 1000.0
     transparency_ratio = transparency_ratio_array(history)
+    transparency_power_error = transparency_power_error_array(history)
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     force_error = f_e - f_h
@@ -591,6 +635,7 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
     t_all = history_array(history, "time_all", dtype=np.float64)
     pos_error_all_mm = history_array(history, "pos_error_all", dtype=np.float64) * 1000.0
     transparency_ratio_all = transparency_ratio_array(history, suffix="_all")
+    transparency_power_error_all = transparency_power_error_array(history, suffix="_all")
     f_h_all = history_array(history, "F_h_all", dtype=np.float64)
     f_e_all = history_array(history, "F_e_all", dtype=np.float64)
     force_error_all = f_e_all - f_h_all if f_h_all.size and f_e_all.size else np.asarray([], dtype=np.float64)
@@ -658,22 +703,27 @@ def plot_error_diagnostics(history: dict[str, Any], out_path: str | Path, title:
 
     _plot_error_panel(
         axes[2],
-        transparency_ratio,
-        transparency_ratio_all,
-        ylabel="x_m / x_s",
-        label="transparency ratio",
+        transparency_power_error,
+        transparency_power_error_all,
+        ylabel="Power err [W]",
+        label="F_e v_m - F_h v_s",
         color="tab:brown",
-        reference=1.0,
-        reference_label="ideal transparency ratio: 1",
-        symmetric_reference=False,
+        reference=float(cfg.MAX_POWER_ERROR),
+        reference_label=f"power reward scale: +/-{float(cfg.MAX_POWER_ERROR):g} W",
     )
 
     track_norm = np.maximum(np.abs(pos_error_mm / 1000.0) - 0.002, 0.0) / max(float(cfg.MAX_POSITION_ERROR), 1e-9)
     force_norm = np.abs(force_error) / 25.0
-    transparency_norm = np.abs(transparency_ratio - 1.0)
+    transparency_norm = np.abs(transparency_power_error) / max(float(cfg.MAX_POWER_ERROR), 1e-9)
     axes[3].plot(t, _moving_avg_seconds(t, track_norm, 1.0), lw=2.0, color="tab:purple", label="tracking deadband / scale")
     axes[3].plot(t, _moving_avg_seconds(t, force_norm, 1.0), lw=2.0, color="tab:red", label="|force mismatch| / 25 N")
-    axes[3].plot(t, _moving_avg_seconds(t, transparency_norm, 1.0), lw=2.0, color="tab:brown", label="|x_m / x_s - 1|")
+    axes[3].plot(
+        t,
+        _moving_avg_seconds(t, transparency_norm, 1.0),
+        lw=2.0,
+        color="tab:brown",
+        label=f"|power error| / {float(cfg.MAX_POWER_ERROR):g} W",
+    )
     axes[3].set_ylabel("Normalized abs.")
     axes[3].set_title("Smoothed normalized error magnitudes")
     axes[3].grid(True, alpha=0.25)
@@ -780,7 +830,7 @@ def plot_eval_signal_performance(history: dict[str, Any], out_path: str | Path, 
 
     sc = _metric_scatter(axes[0], tracking_mm, "Track RMSE [mm]", f"{title}: held-out signal performance")
     _metric_scatter(axes[1], force_rmse, "Force RMSE [N]", "Force matching by evaluation signal")
-    _metric_scatter(axes[2], transparency_rmse, "Transp ratio", "Transparency ratio by evaluation signal")
+    _metric_scatter(axes[2], transparency_rmse, "Power RMSE [W]", "Transparency power error by evaluation signal")
 
     axes[3].scatter(
         episodes,

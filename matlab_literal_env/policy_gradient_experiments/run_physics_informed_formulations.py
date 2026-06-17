@@ -174,6 +174,7 @@ SUMMARY_FIELDS = (
     "tracking_max_abs_m",
     "velocity_error_rmse_mps",
     "acceleration_error_rmse_mps2",
+    "transparency_rmse_w",
     "transparency_ratio_mean",
     "transparency_ratio_rmse",
     "transparency_ratio_error_rmse",
@@ -276,11 +277,12 @@ def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
     x = np.arange(len(rows))
     metrics = [
         ("tracking_rmse_m", "Tracking RMSE [mm]", 1000.0),
-        ("transparency_ratio_mean", "Actual transparency ratio mean: x_m / x_s", 1.0),
+        ("transparency_rmse_w", "Transparency RMSE [W]", 1.0),
+        ("transparency_ratio_mean", "Actual transparency ratio mean: (F_h/v_m)/(F_e/v_s)", 1.0),
         ("rms_u_v", "RMS u_v [V]", 1.0),
         ("mean_abs_delta_u_v", "Mean |delta u| [V]", 1.0),
     ]
-    fig, axes = plt.subplots(len(metrics), 1, figsize=(14, 14), constrained_layout=True)
+    fig, axes = plt.subplots(len(metrics), 1, figsize=(14, 17), constrained_layout=True)
     for ax, (key, ylabel, scale) in zip(axes, metrics):
         values = [float(row.get(key, 0.0)) * scale for row in rows]
         ax.bar(x, values, color="tab:blue", alpha=0.78)
@@ -308,14 +310,13 @@ def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
         axes[1].plot(eval_steps, train.get("eval_transparency_rmse", np.asarray([])), marker="o", label=row["key"])
         axes[2].plot(eval_steps, train.get("eval_mean_reward", np.asarray([])), marker="o", label=row["key"])
     axes[0].set_ylabel("Eval tracking RMSE [mm]")
-    axes[1].set_ylabel("Eval actual ratio x_m / x_s")
-    axes[1].axhline(1.0, color="tab:red", lw=1.1, ls="--", alpha=0.85, label="ideal ratio = 1")
-    all_eval_ratios = [
+    axes[1].set_ylabel("Eval transparency RMSE [W]")
+    all_eval_transparency = [
         value
         for row in rows
         for value in np.asarray(_load_training_npz(row["out_dir"]).get("eval_transparency_rmse", []), dtype=np.float64).tolist()
     ]
-    _use_symlog_if_needed(axes[1], all_eval_ratios)
+    _use_symlog_if_needed(axes[1], all_eval_transparency)
     axes[2].set_ylabel("Eval return")
     axes[2].set_xlabel("Completed training episodes")
     for ax in axes:
@@ -357,7 +358,7 @@ def plot_transparency_ratio_rollouts(root: Path, rows: list[dict[str, Any]]) -> 
     _use_symlog_if_needed(ax, all_values)
     ax.set_title("Actual transparency ratio over evaluation rollouts")
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("x_m / x_s")
+    ax.set_ylabel("(F_h/v_m) / (F_e/v_s)")
     ax.grid(True, alpha=0.25)
     ax.legend(loc="best", fontsize=8)
     fig.savefig(root / "transparency_ratio_rollouts.png", dpi=150, bbox_inches="tight")
@@ -370,16 +371,17 @@ def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_r
         "",
         f"TensorBoard root: `{tensorboard_root}`",
         "",
-        "Transparency is reported as the actual position ratio `x_m / x_s`; the ideal value is `1.0`.",
+        "The learning transparency term is the old impedance/power error `F_e*v_m - F_h*v_s` in W. The actual force/velocity ratio `(F_h/v_m)/(F_e/v_s)` is also reported; its ideal value is `1.0`.",
         "",
-        "| Formulation | Track RMSE mm | Actual transp ratio mean | Ratio error RMSE | RMS u V | Mean abs(delta u) V | Completed |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Formulation | Track RMSE mm | Transp RMSE W | Actual transp ratio mean | Ratio error RMSE | RMS u V | Mean abs(delta u) V | Completed |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| {key} | {track:.3f} | {ratio:.4f} | {trans_err:.4f} | {rms_u:.3f} | {du:.3f} | {done:.2f} |".format(
+            "| {key} | {track:.3f} | {transp:.4f} | {ratio:.4g} | {trans_err:.4g} | {rms_u:.3f} | {du:.3f} | {done:.2f} |".format(
                 key=row["key"],
                 track=1000.0 * float(row.get("tracking_rmse_m", 0.0)),
+                transp=float(row.get("transparency_rmse_w", 0.0)),
                 ratio=float(row.get("transparency_ratio_mean", 0.0)),
                 trans_err=float(row.get("transparency_ratio_error_rmse", 0.0)),
                 rms_u=float(row.get("rms_u_v", 0.0)),
@@ -394,7 +396,7 @@ def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_r
         "- `summary.csv`: flat metric table",
         "- `summary_bars.png`: final metric comparison with actual transparency ratio",
         "- `learning_curves.png`: evaluation checkpoints across training",
-        "- `transparency_ratio_rollouts.png`: actual `x_m / x_s` over reevaluated rollouts",
+        "- `transparency_ratio_rollouts.png`: actual `(F_h/v_m)/(F_e/v_s)` over reevaluated rollouts",
     ])
     (root / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -459,7 +461,7 @@ def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, f
     summary["eval_metrics"] = dict(eval_metrics)
     summary["mean_reward"] = float(eval_metrics.get("mean_reward", summary.get("mean_reward", 0.0)))
     summary["tracking_rmse_m"] = float(eval_metrics.get("tracking_rmse_m", summary.get("tracking_rmse_m", 0.0)))
-    summary["transparency_rmse_w"] = float(eval_metrics.get("transparency_ratio_mean", summary.get("transparency_rmse_w", 0.0)))
+    summary["transparency_rmse_w"] = float(eval_metrics.get("transparency_rmse_w", summary.get("transparency_rmse_w", 0.0)))
     summary["pre_switch_tracking_rmse_m"] = float(
         eval_metrics.get("pre_switch_tracking_rmse_m", summary.get("pre_switch_tracking_rmse_m", 0.0))
     )
@@ -467,10 +469,10 @@ def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, f
         eval_metrics.get("post_switch_tracking_rmse_m", summary.get("post_switch_tracking_rmse_m", 0.0))
     )
     summary["pre_switch_transparency_rmse_w"] = float(
-        eval_metrics.get("pre_switch_transparency_ratio_mean", summary.get("pre_switch_transparency_rmse_w", 0.0))
+        eval_metrics.get("pre_switch_transparency_rmse_w", summary.get("pre_switch_transparency_rmse_w", 0.0))
     )
     summary["post_switch_transparency_rmse_w"] = float(
-        eval_metrics.get("post_switch_transparency_ratio_mean", summary.get("post_switch_transparency_rmse_w", 0.0))
+        eval_metrics.get("post_switch_transparency_rmse_w", summary.get("post_switch_transparency_rmse_w", 0.0))
     )
     summary["invalid_episode_rate"] = float(eval_metrics.get("invalid_episode", summary.get("invalid_episode_rate", 0.0)))
     for key in SUMMARY_FIELDS:

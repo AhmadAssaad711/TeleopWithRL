@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -15,7 +16,7 @@ import numpy as np
 
 from ... import config as cfg
 from ..simuoriginal_replica import SimuOriginalProfile
-from .common import history_array, save_json
+from .common import history_array, save_json, transparency_power_error_array, transparency_ratio_array
 from .policy_gradient import (
     PG_ALGO_PPO_CONTINUOUS,
     PG_ALGO_SAC,
@@ -25,6 +26,8 @@ from .policy_gradient import (
     get_policy_gradient_state_variant,
     require_sb3,
 )
+from .dqn_state_variants import build_custom_dqn_state_variant_from_spec
+from .rewarding import reward_variant_from_spec
 
 
 _REPLICA_XM_DOT = 2
@@ -129,6 +132,45 @@ def resolve_model_path(path: str | Path, summary: dict[str, Any] | None = None) 
     raise FileNotFoundError(f"Could not find a policy-gradient model under: {path}")
 
 
+def _state_variant_from_summary(summary: dict[str, Any]):
+    state_spec = summary.get("state_spec")
+    if isinstance(state_spec, dict):
+        source_spec = state_spec.get("source_spec")
+        if isinstance(source_spec, dict):
+            return build_custom_dqn_state_variant_from_spec(source_spec)
+        if "selected_features" in state_spec or "features" in state_spec:
+            spec = dict(state_spec)
+            spec.setdefault("name", summary.get("state_variant", "custom_state"))
+            spec.setdefault(
+                "description",
+                summary.get("state_variant_description", "Summary-defined custom state."),
+            )
+            return build_custom_dqn_state_variant_from_spec(spec)
+
+    try:
+        return get_policy_gradient_state_variant(str(summary["state_variant"]))
+    except KeyError as exc:
+        raise KeyError(
+            f"Unknown policy-gradient state variant {summary.get('state_variant')!r}. "
+            "For notebook-defined variants, the run summary must include 'state_spec'."
+        ) from exc
+
+
+def _reward_variant_from_summary(summary: dict[str, Any]):
+    for key in ("reward_spec", "reward_config"):
+        spec = summary.get(key)
+        if isinstance(spec, dict):
+            return reward_variant_from_spec(spec)
+
+    try:
+        return get_policy_gradient_reward_variant(str(summary["reward_variant"]))
+    except KeyError as exc:
+        raise KeyError(
+            f"Unknown policy-gradient reward variant {summary.get('reward_variant')!r}. "
+            "For notebook-defined rewards, the run summary must include 'reward_config'."
+        ) from exc
+
+
 def build_eval_context(summary: dict[str, Any]):
     env_kwargs = {
         "episode_duration": float(summary["episode_duration"]),
@@ -141,8 +183,8 @@ def build_eval_context(summary: dict[str, Any]):
     }
     if summary.get("action_levels") is not None:
         env_kwargs["action_levels"] = list(summary["action_levels"])
-    state_variant = get_policy_gradient_state_variant(str(summary["state_variant"]))
-    reward_variant = get_policy_gradient_reward_variant(str(summary["reward_variant"]))
+    state_variant = _state_variant_from_summary(summary)
+    reward_variant = _reward_variant_from_summary(summary)
     env_factory = build_policy_gradient_env_factory(
         algo=str(summary.get("algo", summary.get("family", PG_ALGO_PPO_CONTINUOUS))),
         env_mode=str(summary["env_mode"]),
@@ -519,6 +561,9 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
     error = history_array(history, "pos_error", dtype=np.float64)
     u_v = history_array(history, "u_v", dtype=np.float64)
     reward = history_array(history, "reward", dtype=np.float64)
+    transparency_power_error = transparency_power_error_array(history)
+    transparency_ratio = transparency_ratio_array(history)
+    transparency_ratio_error = transparency_ratio - 1.0
     n = min(t.size, error.size)
     t = t[:n]
     error = error[:n]
@@ -550,6 +595,9 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
         "peak_error_m": _peak_abs(error),
         "post_contact_rms_error_m": _rms(error[post]) if post.size == error.size else 0.0,
         "post_contact_peak_error_m": _peak_abs(error[post]) if post.size == error.size else 0.0,
+        "transparency_rmse_w": _rms(transparency_power_error),
+        "transparency_ratio_mean": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
+        "transparency_ratio_error_rmse": _rms(transparency_ratio_error),
         "settling_time_s": settling_time(
             t,
             error,
@@ -558,6 +606,8 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
             window_s=1.0,
         ),
         "control_energy_v2_s": _integral(t[: u_v.size], u_v ** 2),
+        "mean_abs_u_v": float(np.mean(np.abs(u_v))) if u_v.size else 0.0,
+        "rms_u_v": _rms(u_v),
         "control_smoothness_mean_abs_delta_v": float(np.mean(np.abs(du))) if du.size else 0.0,
         "control_smoothness_rms_delta_v": _rms(du),
         "max_abs_u_v": _peak_abs(u_v),
@@ -649,7 +699,7 @@ def plot_scenario_result(result: dict[str, Any], out_dir: str | Path) -> None:
             ax.axvline(float(scenario.force_release_time), color="tab:orange", ls=":", lw=1.2)
         ax.grid(True, alpha=0.25)
     fig.suptitle(f"{scenario.group}: {scenario.name}")
-    fig.savefig(out_dir / f"{safe_stem(scenario.name)}.png", dpi=150, bbox_inches="tight")
+    fig.savefig(_save_path(out_dir / f"{safe_stem(scenario.name)}.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -668,7 +718,7 @@ def plot_bode(bode_rows: list[dict[str, Any]], out_path: str | Path) -> None:
     axes[1].set_ylabel("phase lag [deg]")
     axes[1].set_xlabel("frequency [rad/s]")
     axes[1].grid(True, which="both", alpha=0.3)
-    fig.savefig(Path(out_path), dpi=150, bbox_inches="tight")
+    fig.savefig(_save_path(out_path), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -682,6 +732,20 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _save_path(path: str | Path) -> str | Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        return path
+    resolved = path.resolve()
+    text = str(resolved)
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
 
 
 def run_focused_evaluation(

@@ -158,6 +158,9 @@ class PolicyGradientReplicaEnv(gym.Env):
         self.reward_env = ReplicaRewardEnv(self.base_env, self.reward_variant)
         self.parallel_envs = 1
         self.obs_dim = int(self.state_variant.obs_dim)
+        self._temporal_lags = self._state_temporal_lags()
+        self._temporal_base_obs_dim = self._state_temporal_base_obs_dim()
+        self._temporal_obs_history: list[np.ndarray] = []
         self.action_levels = _resolve_action_levels(getattr(self.base_env, "action_levels", None))
         self.is_discrete = self.algo == PG_ALGO_PPO_DISCRETE
 
@@ -171,9 +174,50 @@ class PolicyGradientReplicaEnv(gym.Env):
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         self.last_obs = np.zeros(self.obs_dim, dtype=np.float32)
 
+    def _state_temporal_lags(self) -> tuple[int, ...]:
+        metadata = dict(self.state_variant.metadata or {})
+        temporal = metadata.get("temporal_stack")
+        if not isinstance(temporal, dict):
+            return ()
+        lags = tuple(sorted({int(lag) for lag in temporal.get("lags", [])}))
+        return lags if lags and 0 in lags else ()
+
+    def _state_temporal_base_obs_dim(self) -> int:
+        if not self._temporal_lags:
+            return 0
+        metadata = dict(self.state_variant.metadata or {})
+        base_dim = int(metadata.get("base_obs_dim", 0) or 0)
+        expected_dim = base_dim * len(self._temporal_lags)
+        if base_dim <= 0 or expected_dim != int(self.state_variant.obs_dim):
+            raise ValueError(
+                "Temporal state metadata is inconsistent: "
+                f"base_obs_dim={base_dim}, lags={self._temporal_lags}, obs_dim={self.state_variant.obs_dim}."
+            )
+        return base_dim
+
     def _transform(self, obs: np.ndarray, info: dict[str, Any] | None) -> np.ndarray:
         transformed = self.state_variant.extractor(np.asarray(obs, dtype=np.float32), info or {})
+        if self._temporal_lags:
+            current = np.asarray(transformed, dtype=np.float32).reshape(-1)[: self._temporal_base_obs_dim]
+            return self._stack_temporal_observation(current)
         return np.asarray(transformed, dtype=np.float32)
+
+    def _reset_temporal_observation(self, current: np.ndarray) -> np.ndarray:
+        max_lag = max(self._temporal_lags)
+        current = np.asarray(current, dtype=np.float32).reshape(-1)
+        self._temporal_obs_history = [current.copy() for _ in range(max_lag + 1)]
+        return np.concatenate([self._temporal_obs_history[lag] for lag in self._temporal_lags]).astype(np.float32, copy=False)
+
+    def _stack_temporal_observation(self, current: np.ndarray) -> np.ndarray:
+        current = np.asarray(current, dtype=np.float32).reshape(-1)
+        if not self._temporal_obs_history:
+            return self._reset_temporal_observation(current)
+        max_lag = max(self._temporal_lags)
+        self._temporal_obs_history.insert(0, current.copy())
+        del self._temporal_obs_history[max_lag + 1 :]
+        while len(self._temporal_obs_history) <= max_lag:
+            self._temporal_obs_history.append(self._temporal_obs_history[-1].copy())
+        return np.concatenate([self._temporal_obs_history[lag] for lag in self._temporal_lags]).astype(np.float32, copy=False)
 
     def set_reset_options_seed(self, seed: int) -> None:
         self._reset_options_rng = np.random.default_rng(int(seed))
@@ -190,6 +234,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         if options is None:
             options = self._sample_train_reset_options()
         obs, info = self.reward_env.reset(seed=seed, options=options)
+        self._temporal_obs_history = []
         self.last_obs = self._transform(obs, info)
         return self.last_obs.copy(), dict(info)
 
@@ -211,6 +256,9 @@ class PolicyGradientReplicaEnv(gym.Env):
         merged = dict(history)
         merged["state_variant_name"] = self.state_variant.name
         merged["state_variant_features"] = list(self.state_variant.feature_names)
+        if self._temporal_lags:
+            merged["state_temporal_lags"] = list(self._temporal_lags)
+            merged["state_temporal_base_obs_dim"] = int(self._temporal_base_obs_dim)
         merged["algo"] = self.algo
         return merged
 

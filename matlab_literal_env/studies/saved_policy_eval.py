@@ -23,6 +23,7 @@ from .common import (
     resolve_action_levels,
     save_json,
     scenario_plan,
+    transparency_power_error_array,
     transparency_ratio_array,
 )
 from .dqn import build_dqn_env_factory
@@ -75,6 +76,7 @@ def _build_eval_context(summary: dict[str, Any]):
 def _episode_metrics(history: dict[str, Any], episode_policy_rows: list[dict[str, Any]]) -> dict[str, float]:
     reward = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
+    transparency_power_error = transparency_power_error_array(history)
     transparency_ratio = transparency_ratio_array(history)
     u_v = history_array(history, "u_v", dtype=np.float64)
     q_gap_arr = np.asarray([row["q_gap"] for row in episode_policy_rows], dtype=np.float64)
@@ -83,7 +85,9 @@ def _episode_metrics(history: dict[str, Any], episode_policy_rows: list[dict[str
     return {
         "episode_return": float(reward.sum()) if reward.size else 0.0,
         "tracking_rmse_mm": float(np.sqrt(np.mean(pos_error ** 2)) * 1000.0) if pos_error.size else 0.0,
-        "transparency_rmse_w": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
+        "transparency_rmse_w": (
+            float(np.sqrt(np.mean(transparency_power_error ** 2))) if transparency_power_error.size else 0.0
+        ),
         "transparency_ratio_mean": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
         "transparency_ratio_error_rmse": (
             float(np.sqrt(np.mean((transparency_ratio - 1.0) ** 2))) if transparency_ratio.size else 0.0
