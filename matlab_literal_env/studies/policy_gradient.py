@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -77,6 +78,30 @@ def require_sb3() -> None:
             "Policy-gradient experiments require 'stable-baselines3'. "
             "Install it with 'pip install stable-baselines3'."
         ) from _SB3_IMPORT_ERROR
+
+
+def load_reset_options_json(path: str | Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    with open(Path(path), "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        for key in ("signals", "reset_options", "scenarios"):
+            if key in payload:
+                payload = payload[key]
+                break
+    if not isinstance(payload, list):
+        raise TypeError(f"Reset-options JSON must contain a list, got {type(payload).__name__}")
+    options: list[dict[str, Any]] = []
+    for row in payload:
+        row = dict(row)
+        if isinstance(row.get("reset_options"), dict):
+            merged = dict(row["reset_options"])
+            if "name" in row and "name" not in merged:
+                merged["name"] = row["name"]
+            row = merged
+        options.append(row)
+    return options
 
 
 def algo_output_dir_name(algo: str) -> str:
@@ -494,6 +519,8 @@ def evaluate_policy_gradient(
             else None
         )
         obs, info = env.reset(seed=seed_offset + ep, options=reset_options)
+        if hasattr(model, "reset_recurrent_state"):
+            model.reset_recurrent_state()
         done = False
         obs_trace: list[np.ndarray] = []
         final_info = dict(info)
@@ -1196,6 +1223,7 @@ def train_policy_gradient_variant(
             "master_input_mode": cfg.MASTER_INPUT_FORCE,
             "total_episodes": int(total_episodes),
             "total_timesteps": int(total_timesteps),
+            "actual_train_timesteps": int(getattr(model, "num_timesteps", total_timesteps)),
             "test_episodes": int(test_episodes),
             "evaluation_history_mode": "mean_over_test_episodes",
             "obs_dim": int(state_variant.obs_dim),
@@ -1204,6 +1232,15 @@ def train_policy_gradient_variant(
             "state_spec": state_variant.metadata,
             "reward_config": asdict(reward_variant),
             "model_hyperparameters": model_hyperparameters,
+            "ppo_n_steps": int(model_hyperparameters.get("n_steps", 0) or 0),
+            "ppo_batch_size": int(model_hyperparameters.get("batch_size", 0) or 0),
+            "ppo_n_epochs": int(model_hyperparameters.get("n_epochs", 0) or 0),
+            "ppo_learning_rate": float(model_hyperparameters.get("learning_rate", 0.0) or 0.0),
+            "ppo_gamma": float(model_hyperparameters.get("gamma", 0.0) or 0.0),
+            "ppo_gae_lambda": float(model_hyperparameters.get("gae_lambda", 0.0) or 0.0),
+            "ppo_ent_coef": float(model_hyperparameters.get("ent_coef", 0.0) or 0.0),
+            "ppo_clip_range": float(model_hyperparameters.get("clip_range", 0.0) or 0.0),
+            "ppo_target_kl": float(model_hyperparameters.get("target_kl", 0.0) or 0.0),
             "model_device": str(ppo_device),
             "episode_duration": float(env_kwargs["episode_duration"]),
             "env_switch_time": float(env_kwargs["env_switch_time"]),
@@ -1227,7 +1264,10 @@ def train_policy_gradient_variant(
             "tracking_max_abs_m": float(eval_metrics.get("tracking_max_abs_m", 0.0)),
             "velocity_error_rmse_mps": float(eval_metrics.get("velocity_error_rmse_mps", 0.0)),
             "acceleration_error_rmse_mps2": float(eval_metrics.get("acceleration_error_rmse_mps2", 0.0)),
+            "transparency_ratio_median": float(eval_metrics.get("transparency_ratio_median", 0.0)),
             "transparency_ratio_error_rmse": float(eval_metrics.get("transparency_ratio_error_rmse", 0.0)),
+            "transparency_ratio_valid_fraction": float(eval_metrics.get("transparency_ratio_valid_fraction", 0.0)),
+            "transparency_ratio_within_20pct": float(eval_metrics.get("transparency_ratio_within_20pct", 0.0)),
             "mean_abs_u_v": float(eval_metrics.get("mean_abs_u_v", 0.0)),
             "rms_u_v": float(eval_metrics.get("rms_u_v", 0.0)),
             "control_energy_v2_s": float(eval_metrics.get("control_energy_v2_s", 0.0)),
@@ -1236,6 +1276,9 @@ def train_policy_gradient_variant(
             "mean_abs_delta_u_v": float(eval_metrics.get("mean_abs_delta_u_v", 0.0)),
             "rms_delta_u_v": float(eval_metrics.get("rms_delta_u_v", 0.0)),
             "max_abs_delta_u_v": float(eval_metrics.get("max_abs_delta_u_v", 0.0)),
+            "mean_abs_delta2_u_v": float(eval_metrics.get("mean_abs_delta2_u_v", 0.0)),
+            "rms_delta2_u_v": float(eval_metrics.get("rms_delta2_u_v", 0.0)),
+            "max_abs_delta2_u_v": float(eval_metrics.get("max_abs_delta2_u_v", 0.0)),
         },
     )
     return result

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,10 +35,12 @@ if __package__ in (None, ""):
         PG_ALGO_PPO_CONTINUOUS,
         build_policy_gradient_env_factory,
         evaluate_policy_gradient,
+        load_reset_options_json,
         require_sb3,
         save_policy_gradient_visuals,
         train_policy_gradient_variant,
     )
+    from TeleopWithRL.matlab_literal_env.studies.focused_evaluation import run_focused_evaluation
     from TeleopWithRL.matlab_literal_env.studies.rewarding import (
         DEFAULT_ACTION_DELTA_SCALE_V,
         DEFAULT_ACTION_SCALE_V,
@@ -56,10 +59,12 @@ else:
         PG_ALGO_PPO_CONTINUOUS,
         build_policy_gradient_env_factory,
         evaluate_policy_gradient,
+        load_reset_options_json,
         require_sb3,
         save_policy_gradient_visuals,
         train_policy_gradient_variant,
     )
+    from ..studies.focused_evaluation import run_focused_evaluation
     from ..studies.rewarding import (
         DEFAULT_ACTION_DELTA_SCALE_V,
         DEFAULT_ACTION_SCALE_V,
@@ -168,6 +173,8 @@ SUMMARY_FIELDS = (
     "obs_dim",
     "state_features",
     "reward_terms",
+    "total_timesteps",
+    "model_path",
     "mean_reward",
     "tracking_rmse_m",
     "tracking_mae_m",
@@ -188,7 +195,33 @@ SUMMARY_FIELDS = (
     "invalid_episode_rate",
     "tensorboard_dir",
     "out_dir",
+    "focused_scenario_count",
+    "focused_tracking_rmse_mm",
+    "focused_post_contact_rmse_mm",
+    "focused_transparency_rmse_w",
+    "focused_transparency_ratio_median",
+    "focused_transparency_ratio_error_rmse",
+    "focused_transparency_ratio_valid_fraction",
+    "focused_transparency_ratio_within_20pct",
+    "focused_rms_u_v",
+    "focused_mean_abs_delta_u_v",
+    "focused_mean_abs_delta2_u_v",
+    "focused_failure_rate",
     "note",
+    "train_requested_episodes",
+    "actual_train_timesteps",
+    "parallel_envs",
+    "vec_env_type",
+    "resolved_vec_env_type",
+    "ppo_n_steps",
+    "ppo_batch_size",
+    "ppo_n_epochs",
+    "ppo_gamma",
+    "ppo_ent_coef",
+    "eval_every_episodes",
+    "test_episodes",
+    "train_signal_count",
+    "eval_signal_count",
 )
 
 
@@ -401,7 +434,86 @@ def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_r
     (root / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def row_from_summary(formulation: Formulation, summary: dict[str, Any]) -> dict[str, Any]:
+def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(row.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def aggregate_focused_metrics(path: Path) -> dict[str, float]:
+    try:
+        with open(_long_path(path), "r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except FileNotFoundError:
+        return {}
+    if not rows:
+        return {}
+
+    def mean(key: str) -> float:
+        return float(np.mean([_float(row, key) for row in rows]))
+
+    return {
+        "focused_scenario_count": float(len(rows)),
+        "focused_tracking_rmse_mm": 1000.0 * mean("rms_error_m"),
+        "focused_post_contact_rmse_mm": 1000.0 * mean("post_contact_rms_error_m"),
+        "focused_transparency_rmse_w": mean("transparency_rmse_w"),
+        "focused_transparency_ratio_median": mean("transparency_ratio_median"),
+        "focused_transparency_ratio_error_rmse": mean("transparency_ratio_error_rmse"),
+        "focused_transparency_ratio_valid_fraction": mean("transparency_ratio_valid_fraction"),
+        "focused_transparency_ratio_within_20pct": mean("transparency_ratio_within_20pct"),
+        "focused_rms_u_v": mean("rms_u_v"),
+        "focused_mean_abs_delta_u_v": mean("control_smoothness_mean_abs_delta_v"),
+        "focused_mean_abs_delta2_u_v": mean("control_smoothness_mean_abs_delta2_v"),
+        "focused_failure_rate": mean("failure_flag"),
+    }
+
+
+def collect_available_rows(
+    root: Path,
+    formulations: list[Formulation] | tuple[Formulation, ...],
+    current_rows: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    current_rows = dict(current_rows or {})
+    rows: list[dict[str, Any]] = []
+    for formulation in formulations:
+        if formulation.key in current_rows:
+            rows.append(current_rows[formulation.key])
+            continue
+        summary_path = _summary_path_for(root, formulation)
+        if not summary_path.exists():
+            continue
+        focused_csv = root / formulation.key / "focused_eval" / "focused_eval_metrics.csv"
+        rows.append(row_from_summary(formulation, load_json(summary_path), aggregate_focused_metrics(focused_csv)))
+    return rows
+
+
+def _long_path(path: str | Path) -> str | Path:
+    path = Path(path)
+    if os.name != "nt":
+        return path
+    resolved = path.resolve()
+    text = str(resolved)
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def _file_exists(path: str | Path) -> bool:
+    try:
+        with open(_long_path(path), "rb"):
+            return True
+    except FileNotFoundError:
+        return False
+
+
+def row_from_summary(
+    formulation: Formulation,
+    summary: dict[str, Any],
+    focused: dict[str, float] | None = None,
+) -> dict[str, Any]:
     eval_metrics = dict(summary.get("eval_metrics") or {})
     row = {
         "key": formulation.key,
@@ -409,6 +521,23 @@ def row_from_summary(formulation: Formulation, summary: dict[str, Any]) -> dict[
         "obs_dim": int(summary.get("obs_dim", len(formulation.state_features))),
         "state_features": " ".join(formulation.state_features),
         "reward_terms": " ".join(term["name"] for term in (BASE_REWARD_TERMS + formulation.extra_terms)),
+        "total_timesteps": int(summary.get("total_timesteps", 0) or 0),
+        "actual_train_timesteps": int(summary.get("actual_train_timesteps", summary.get("total_timesteps", 0)) or 0),
+        "train_requested_episodes": int(summary.get("total_episodes", 0) or 0),
+        "parallel_envs": int(summary.get("parallel_envs", 0) or 0),
+        "vec_env_type": str(summary.get("vec_env_type", "")),
+        "resolved_vec_env_type": str(summary.get("resolved_vec_env_type", "")),
+        "ppo_n_steps": int(summary.get("ppo_n_steps", 0) or 0),
+        "ppo_batch_size": int(summary.get("ppo_batch_size", 0) or 0),
+        "ppo_n_epochs": int(summary.get("ppo_n_epochs", 0) or 0),
+        "ppo_gamma": float(summary.get("ppo_gamma", 0.0) or 0.0),
+        "ppo_ent_coef": float(summary.get("ppo_ent_coef", 0.0) or 0.0),
+        "eval_every_episodes": int(summary.get("eval_every_episodes", 0) or 0),
+        "test_episodes": int(summary.get("test_episodes", 0) or 0),
+        "train_signal_count": int(summary.get("train_signal_count", 0) or 0),
+        "eval_signal_count": int(summary.get("eval_signal_count", 0) or 0),
+        "model_path": str(summary.get("model_path", "")),
+        "out_dir": str(summary.get("out_dir", "")),
         "note": formulation.note,
     }
     for key in SUMMARY_FIELDS:
@@ -419,6 +548,8 @@ def row_from_summary(formulation: Formulation, summary: dict[str, Any]) -> dict[
         elif key in eval_metrics:
             row[key] = eval_metrics[key]
     row["completed_episode_rate"] = eval_metrics.get("completed_episode_rate", summary.get("completed_episode_rate", 0.0))
+    if focused:
+        row.update(focused)
     return row
 
 
@@ -447,11 +578,60 @@ def _env_kwargs_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
     return env_kwargs
 
 
-def _load_ppo_model(model_path: str | Path):
+def _load_ppo_model(model_path: str | Path, summary: dict[str, Any] | None = None):
     require_sb3()
     from stable_baselines3 import PPO
 
-    return PPO.load(str(model_path))
+    _install_numpy_pickle_compat()
+    custom_objects = _sb3_space_custom_objects(summary or {})
+    return PPO.load(str(model_path), custom_objects=custom_objects)
+
+
+def _sb3_space_custom_objects(summary: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from gymnasium import spaces
+    except Exception:
+        return {}
+    obs_dim = int(summary.get("obs_dim", 0) or 0)
+    if obs_dim <= 0:
+        return {}
+    action_levels = np.asarray(summary.get("action_levels", cfg.V_LEVELS), dtype=np.float32).reshape(-1)
+    action_limit = float(np.max(np.abs(action_levels))) if action_levels.size else 5.0
+    return {
+        "observation_space": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
+        "action_space": spaces.Box(
+            low=np.asarray([-action_limit], dtype=np.float32),
+            high=np.asarray([action_limit], dtype=np.float32),
+            dtype=np.float32,
+        ),
+    }
+
+
+def _install_numpy_pickle_compat() -> None:
+    try:
+        import numpy.core as np_core
+        import numpy.core.multiarray as np_multiarray
+        import numpy.core.numeric as np_numeric
+        import numpy.random._pickle as np_random_pickle
+    except Exception:
+        return
+    sys.modules.setdefault("numpy._core", np_core)
+    sys.modules.setdefault("numpy._core.multiarray", np_multiarray)
+    sys.modules.setdefault("numpy._core.numeric", np_numeric)
+    original_ctor = getattr(np_random_pickle, "__bit_generator_ctor", None)
+    bit_generators = getattr(np_random_pickle, "BitGenerators", {})
+    if original_ctor is None or getattr(original_ctor, "_teleop_compat", False):
+        return
+
+    def _bit_generator_ctor_compat(bit_generator_name="MT19937"):
+        if isinstance(bit_generator_name, type):
+            bit_generator_name = bit_generator_name.__name__
+        if bit_generator_name in bit_generators:
+            return bit_generators[bit_generator_name]()
+        return original_ctor(bit_generator_name)
+
+    _bit_generator_ctor_compat._teleop_compat = True  # type: ignore[attr-defined]
+    np_random_pickle.__bit_generator_ctor = _bit_generator_ctor_compat
 
 
 def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, float], *, test_episodes: int) -> dict[str, Any]:
@@ -504,8 +684,17 @@ def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, f
 def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
     root = policy_gradient_suite_root(args.fe_mode, args.study_name)
     specs_root = root / "specs"
-    rows: list[dict[str, Any]] = []
-    for index, formulation in enumerate(FORMULATIONS, start=1):
+    selected_formulations = [
+        formulation
+        for formulation in FORMULATIONS
+        if not args.only or formulation.key in set(str(key) for key in args.only)
+    ]
+    if not selected_formulations:
+        raise ValueError(f"No formulations selected by --only {args.only!r}")
+
+    current_rows: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = collect_available_rows(root, FORMULATIONS, current_rows)
+    for index, formulation in enumerate(selected_formulations, start=1):
         summary_path = _summary_path_for(root, formulation)
         if not summary_path.exists():
             raise FileNotFoundError(f"Missing trained summary for {formulation.key}: {summary_path}")
@@ -530,8 +719,8 @@ def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
             state_variant=state_variant,
             reward_variant=reward_variant,
         )
-        print(f"[{index}/{len(FORMULATIONS)}] evaluate {formulation.key}: {model_path}", flush=True)
-        model = _load_ppo_model(model_path)
+        print(f"[{index}/{len(selected_formulations)}] evaluate {formulation.key}: {model_path}", flush=True)
+        model = _load_ppo_model(model_path, summary)
         eval_metrics, history = evaluate_policy_gradient(
             model,
             env_factory,
@@ -554,11 +743,13 @@ def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
 
         updated_summary = _update_summary_with_eval(summary, eval_metrics, test_episodes=args.test_episodes)
         save_json(summary_path, updated_summary)
-        rows.append(row_from_summary(formulation, updated_summary))
+        current_rows[formulation.key] = row_from_summary(formulation, updated_summary)
+        rows = collect_available_rows(root, FORMULATIONS, current_rows)
         write_summary_csv(root / "summary.csv", rows)
         plot_summary(root, rows)
 
     tensorboard_root = Path.home() / "AppData" / "Local" / "TeleopWithRL_tb" / root.relative_to(Path(__file__).resolve().parents[2])
+    rows = collect_available_rows(root, FORMULATIONS, current_rows)
     write_summary_csv(root / "summary.csv", rows)
     plot_summary(root, rows)
     write_summary_markdown(root, rows, tensorboard_root)
@@ -578,6 +769,8 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
     root.mkdir(parents=True, exist_ok=True)
     specs_root = root / "specs"
     specs_root.mkdir(parents=True, exist_ok=True)
+    train_reset_options_pool = load_reset_options_json(args.train_reset_options_json)
+    eval_reset_options_schedule = load_reset_options_json(args.eval_reset_options_json)
 
     env_args = SimpleNamespace(
         episode_duration=args.episode_duration,
@@ -597,8 +790,18 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
     )
     env_kwargs = replica_env_kwargs_from_args(env_args)
 
-    rows: list[dict[str, Any]] = []
-    for index, formulation in enumerate(FORMULATIONS, start=1):
+    selected_formulations = tuple(
+        formulation
+        for formulation in FORMULATIONS
+        if not args.only or formulation.key in set(str(key) for key in args.only)
+    )
+    if not selected_formulations:
+        known = ", ".join(formulation.key for formulation in FORMULATIONS)
+        raise ValueError(f"No formulations selected by --only {args.only!r}. Known formulations: {known}")
+
+    current_rows: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = collect_available_rows(root, FORMULATIONS, current_rows)
+    for index, formulation in enumerate(selected_formulations, start=1):
         state_spec = build_state_spec(formulation)
         reward_spec = build_reward_spec(formulation)
         state_spec_path = specs_root / f"{formulation.key}_state.json"
@@ -610,9 +813,9 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
         summary_path = out_dir / "l" / "summary.json"
         if args.skip_existing and summary_path.exists():
             summary = load_json(summary_path)
-            print(f"[{index}/{len(FORMULATIONS)}] skip existing {formulation.key}: {summary_path}", flush=True)
+            print(f"[{index}/{len(selected_formulations)}] skip existing {formulation.key}: {summary_path}", flush=True)
         else:
-            print(f"[{index}/{len(FORMULATIONS)}] train {formulation.key}: {formulation.note}", flush=True)
+            print(f"[{index}/{len(selected_formulations)}] train {formulation.key}: {formulation.note}", flush=True)
             result = train_policy_gradient_variant(
                 algo=PG_ALGO_PPO_CONTINUOUS,
                 out_dir=out_dir,
@@ -632,19 +835,64 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
                 ppo_batch_size=args.ppo_batch_size,
                 ppo_n_epochs=args.ppo_n_epochs,
                 ppo_device=args.ppo_device,
-                train_reset_options_pool=None,
-                eval_reset_options_schedule=None,
+                train_reset_options_pool=train_reset_options_pool,
+                eval_reset_options_schedule=eval_reset_options_schedule,
             )
             summary = load_json(Path(result.out_dir) / "l" / "summary.json")
-        rows.append(row_from_summary(formulation, summary))
+        focused_dir = root / formulation.key / "focused_eval"
+        focused_csv = focused_dir / "focused_eval_metrics.csv"
+        if args.no_focused_eval:
+            print(f"[{index}/{len(selected_formulations)}] focused eval disabled {formulation.key}", flush=True)
+            focused = {}
+        elif args.skip_existing and _file_exists(focused_csv) and not args.refresh_focused_eval:
+            print(f"[{index}/{len(selected_formulations)}] skip existing focused eval {formulation.key}", flush=True)
+            focused = aggregate_focused_metrics(focused_csv)
+        else:
+            print(f"[{index}/{len(selected_formulations)}] focused eval {formulation.key}", flush=True)
+            run_focused_evaluation(
+                model_path=out_dir,
+                out_dir=focused_dir,
+                seed=int(args.focused_seed),
+                deterministic=True,
+                include_bode=not bool(args.skip_bode),
+                save_plots=not bool(args.no_plots),
+            )
+            focused = aggregate_focused_metrics(focused_csv)
+        current_rows[formulation.key] = row_from_summary(formulation, summary, focused)
+        rows = collect_available_rows(root, FORMULATIONS, current_rows)
         write_summary_csv(root / "summary.csv", rows)
         plot_summary(root, rows)
 
     tensorboard_root = Path.home() / "AppData" / "Local" / "TeleopWithRL_tb" / root.relative_to(Path(__file__).resolve().parents[2])
+    rows = collect_available_rows(root, FORMULATIONS, current_rows)
     write_summary_csv(root / "summary.csv", rows)
     plot_summary(root, rows)
     write_summary_markdown(root, rows, tensorboard_root)
-    save_json(root / "study_manifest.json", {"rows": rows, "tensorboard_root": str(tensorboard_root)})
+    save_json(
+        root / "study_manifest.json",
+        {
+            "study_name": str(args.study_name),
+            "objective": "state/reward physics-informed PPO formulations",
+            "training_protocol": {
+                "train_episodes": int(args.train_episodes),
+                "total_timesteps": int(args.total_timesteps),
+                "test_episodes": int(args.test_episodes),
+                "parallel_envs": int(args.parallel_envs),
+                "vec_env": str(args.vec_env),
+                "ppo_n_steps": int(args.ppo_n_steps),
+                "ppo_batch_size": int(args.ppo_batch_size),
+                "ppo_n_epochs": int(args.ppo_n_epochs),
+                "ppo_device": str(args.ppo_device),
+                "eval_every_episodes": int(args.eval_every_episodes),
+                "train_signal_count": int(len(train_reset_options_pool)),
+                "eval_signal_count": int(len(eval_reset_options_schedule)),
+                "train_reset_options_json": None if args.train_reset_options_json is None else str(args.train_reset_options_json),
+                "eval_reset_options_json": None if args.eval_reset_options_json is None else str(args.eval_reset_options_json),
+            },
+            "rows": rows,
+            "tensorboard_root": str(tensorboard_root),
+        },
+    )
     print(f"summary_csv={root / 'summary.csv'}", flush=True)
     print(f"summary_md={root / 'summary.md'}", flush=True)
     print(f"tensorboard_root={tensorboard_root}", flush=True)
@@ -653,7 +901,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run physics-informed PPO formulation comparisons.")
-    parser.add_argument("--study-name", default="physics_informed_formulations_01")
+    parser.add_argument("--study-name", default="physics_informed_formulations_02_fair_500k")
     parser.add_argument("--env-mode", default=cfg.ENV_MODE_CHANGING, choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING])
     parser.add_argument("--fe-mode", default=FE_MODE_DYNAMICS)
     parser.add_argument("--episode-duration", type=float, default=30.0)
@@ -665,19 +913,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-freq-rad", type=float, default=1.0)
     parser.add_argument("--force-phase", type=float, default=0.0)
     parser.add_argument("--force-waveform", default="sine", choices=["sine", "cosine", "square", "ramp", "multisine"])
-    parser.add_argument("--train-episodes", type=int, default=64)
-    parser.add_argument("--total-timesteps", type=int, default=24576)
-    parser.add_argument("--test-episodes", type=int, default=8)
+    parser.add_argument("--train-episodes", type=int, default=334)
+    parser.add_argument("--total-timesteps", type=int, default=500_000)
+    parser.add_argument("--test-episodes", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--parallel-envs", type=int, default=4)
-    parser.add_argument("--vec-env", choices=["auto", "dummy", "subproc"], default="dummy")
-    parser.add_argument("--ppo-n-steps", type=int, default=128)
-    parser.add_argument("--ppo-batch-size", type=int, default=256)
-    parser.add_argument("--ppo-n-epochs", type=int, default=3)
+    parser.add_argument("--parallel-envs", type=int, default=8)
+    parser.add_argument("--vec-env", choices=["auto", "dummy", "subproc"], default="subproc")
+    parser.add_argument("--ppo-n-steps", type=int, default=256)
+    parser.add_argument("--ppo-batch-size", type=int, default=512)
+    parser.add_argument("--ppo-n-epochs", type=int, default=4)
     parser.add_argument("--ppo-device", choices=["cpu", "cuda", "auto"], default="auto")
-    parser.add_argument("--eval-every-episodes", type=int, default=8)
+    parser.add_argument("--eval-every-episodes", type=int, default=150)
+    parser.add_argument("--train-reset-options-json", default=None)
+    parser.add_argument("--eval-reset-options-json", default=None)
+    parser.add_argument("--only", nargs="*", default=None, help="Optional formulation key filter, e.g. F2_error_dot_state_reward.")
     parser.add_argument("--eval-only", action="store_true", help="Load saved PPO models and rerun deterministic test evaluations.")
     parser.add_argument("--eval-seed-offset", type=int, default=30_000)
+    parser.add_argument("--focused-seed", type=int, default=42)
+    parser.add_argument("--skip-bode", action="store_true")
+    parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--no-focused-eval", action="store_true")
+    parser.add_argument("--refresh-focused-eval", action="store_true")
     parser.add_argument("--disable-terminate-on-error", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
     return parser.parse_args()

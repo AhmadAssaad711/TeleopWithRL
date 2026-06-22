@@ -18,6 +18,10 @@ DEFAULT_VELOCITY_ERROR_SCALE_MPS = 3.0
 DEFAULT_FORCE_DIFF_SCALE_N = 25.0
 DEFAULT_TRANSPARENCY_SCALE_RATIO = 1.0
 DEFAULT_TRANSPARENCY_SCALE_W = float(cfg.MAX_POWER_ERROR)
+DEFAULT_SLIDING_LAMBDA = 3.0
+DEFAULT_SECOND_ORDER_ZETA = 0.8
+DEFAULT_SECOND_ORDER_OMEGA_N = 3.0
+DEFAULT_HIGH_PASS_TAU_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -620,6 +624,11 @@ class ReplicaRewardEnv:
         self.action_space = base_env.action_space
         self.observation_space = base_env.observation_space
         self._prev_u_v = 0.0
+        self._prev_action_delta = 0.0
+        self._prev_tracking_energy: float | None = None
+        self._tracking_error_lp = 0.0
+        self._u_v_lp = 0.0
+        self._high_pass_initialized = False
         self._reward_history: dict[str, list[Any]] = {}
         self._formula_terms = tuple(
             _normalize_formula_term(term, index)
@@ -639,6 +648,11 @@ class ReplicaRewardEnv:
     def reset(self, *args, **kwargs):
         obs, info = self.base_env.reset(*args, **kwargs)
         self._prev_u_v = 0.0
+        self._prev_action_delta = 0.0
+        self._prev_tracking_energy = None
+        self._tracking_error_lp = 0.0
+        self._u_v_lp = 0.0
+        self._high_pass_initialized = False
         self._reward_history = {
             "reward": [],
             "reward_track": [],
@@ -675,6 +689,10 @@ class ReplicaRewardEnv:
         info: Mapping[str, Any],
         *,
         action_delta: float,
+        action_delta2: float,
+        lyapunov_increase: float,
+        tracking_error_hf: float,
+        u_v_hf: float,
     ) -> dict[str, float]:
         x_m = float(info.get("x_m", self._last(history, "x_m")))
         x_s = float(info.get("x_s", self._last(history, "x_s")))
@@ -687,6 +705,12 @@ class ReplicaRewardEnv:
         x_m_ddot = float(info.get("a_m_signal", self._last(history, "a_m_signal")))
         x_s_ddot = float(info.get("a_s_signal", self._last(history, "a_s_signal")))
         acceleration_error = x_m_ddot - x_s_ddot
+        sliding_error = velocity_error + (DEFAULT_SLIDING_LAMBDA * pos_error)
+        second_order_error = (
+            acceleration_error
+            + (2.0 * DEFAULT_SECOND_ORDER_ZETA * DEFAULT_SECOND_ORDER_OMEGA_N * velocity_error)
+            + ((DEFAULT_SECOND_ORDER_OMEGA_N ** 2) * pos_error)
+        )
         fallback_transparency_ratio = force_velocity_transparency_ratio(f_h, v_m, f_e, v_s)
         fallback_transparency_error = force_velocity_transparency_error(f_h, v_m, f_e, v_s)
         transparency_ratio = float(
@@ -749,11 +773,19 @@ class ReplicaRewardEnv:
             "u_v": u_v,
             "requested_u_v": requested_u_v,
             "action_delta": float(action_delta),
+            "action_delta2": float(action_delta2),
             "pos_error": pos_error,
             "tracking_error": pos_error,
             "velocity_error": velocity_error,
             "acceleration_error": acceleration_error,
             "tracking_error_ddot": acceleration_error,
+            "sliding_error": sliding_error,
+            "second_order_error": second_order_error,
+            "lyapunov_increase": float(lyapunov_increase),
+            "phase_lag_proxy": pos_error * v_m,
+            "direction_disagreement": max(0.0, -(v_m * v_s)),
+            "tracking_error_hf": float(tracking_error_hf),
+            "u_v_hf": float(u_v_hf),
             "transparency_ratio": transparency_ratio,
             "transparency_error": transparency_error,
             "force_diff": force_diff,
@@ -767,6 +799,18 @@ class ReplicaRewardEnv:
         for key, value in list(context.items()):
             context[f"abs_{key}"] = abs(float(value))
         return context
+
+    def _high_pass_values(self, pos_error: float, u_v: float) -> tuple[float, float]:
+        if not self._high_pass_initialized:
+            self._tracking_error_lp = float(pos_error)
+            self._u_v_lp = float(u_v)
+            self._high_pass_initialized = True
+            return 0.0, 0.0
+        dt = float(getattr(cfg, "RL_DT", 0.02))
+        alpha = dt / max(float(DEFAULT_HIGH_PASS_TAU_S) + dt, 1e-9)
+        self._tracking_error_lp += alpha * (float(pos_error) - self._tracking_error_lp)
+        self._u_v_lp += alpha * (float(u_v) - self._u_v_lp)
+        return float(pos_error) - self._tracking_error_lp, float(u_v) - self._u_v_lp
 
     def _compute_reward(
         self,
@@ -797,11 +841,26 @@ class ReplicaRewardEnv:
         force_diff = f_e - f_h
         u_v = self._last(history, "u_v")
         action_delta = float(u_v - self._prev_u_v)
-        self._prev_u_v = u_v
+        action_delta2 = float(action_delta - self._prev_action_delta)
+        tracking_energy = 0.5 * (float(pos_error) ** 2) + 0.5 * (float(velocity_error) ** 2)
+        lyapunov_increase = (
+            max(0.0, tracking_energy - float(self._prev_tracking_energy))
+            if self._prev_tracking_energy is not None
+            else 0.0
+        )
+        tracking_error_hf, u_v_hf = self._high_pass_values(pos_error, u_v)
 
         custom_terms: dict[str, float] = {}
         if self.variant.formula_terms:
-            context = self._formula_context(history, info, action_delta=action_delta)
+            context = self._formula_context(
+                history,
+                info,
+                action_delta=action_delta,
+                action_delta2=action_delta2,
+                lyapunov_increase=lyapunov_increase,
+                tracking_error_hf=tracking_error_hf,
+                u_v_hf=u_v_hf,
+            )
             reward, grouped_terms, custom_terms = _reward_formula_from_terms(context, self._formula_terms)
             track_term = grouped_terms["track"]
             transparency_term = grouped_terms["transparency"]
@@ -819,6 +878,10 @@ class ReplicaRewardEnv:
                 action_delta=action_delta,
                 variant=self.variant,
             )
+
+        self._prev_u_v = u_v
+        self._prev_action_delta = action_delta
+        self._prev_tracking_energy = tracking_energy
 
         edge_penalty = 0.0
         low_force_edge_penalty = 0.0

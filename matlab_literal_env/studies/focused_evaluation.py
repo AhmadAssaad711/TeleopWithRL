@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -16,7 +17,14 @@ import numpy as np
 
 from ... import config as cfg
 from ..simuoriginal_replica import SimuOriginalProfile
-from .common import history_array, save_json, transparency_power_error_array, transparency_ratio_array
+from .common import (
+    history_array,
+    plot_transparency_ratio_monitor,
+    save_json,
+    transparency_power_error_array,
+    transparency_ratio_array,
+    transparency_ratio_metrics,
+)
 from .policy_gradient import (
     PG_ALGO_PPO_CONTINUOUS,
     PG_ALGO_SAC,
@@ -199,15 +207,70 @@ def load_policy_gradient_model(model_path: str | Path, summary: dict[str, Any]):
     require_sb3()
     from stable_baselines3 import PPO, SAC, TD3
 
+    _install_numpy_pickle_compat()
+    custom_objects = _sb3_space_custom_objects(summary)
     algo = str(summary.get("algo", summary.get("family", PG_ALGO_PPO_CONTINUOUS)))
     model_path = resolve_model_path(model_path, summary)
     if algo == PG_ALGO_PPO_CONTINUOUS:
-        return PPO.load(str(model_path))
+        return PPO.load(str(model_path), custom_objects=custom_objects)
     if algo == PG_ALGO_SAC:
-        return SAC.load(str(model_path))
+        return SAC.load(str(model_path), custom_objects=custom_objects)
     if algo == PG_ALGO_TD3:
-        return TD3.load(str(model_path))
+        return TD3.load(str(model_path), custom_objects=custom_objects)
     raise ValueError(f"Focused continuous evaluation does not support algo: {algo}")
+
+
+def _sb3_space_custom_objects(summary: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from gymnasium import spaces
+    except Exception:
+        return {}
+    obs_dim = int(summary.get("obs_dim", 0) or 0)
+    if obs_dim <= 0:
+        return {}
+    action_levels = np.asarray(summary.get("action_levels", cfg.V_LEVELS), dtype=np.float32).reshape(-1)
+    action_limit = float(np.max(np.abs(action_levels))) if action_levels.size else 5.0
+    return {
+        "observation_space": spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32,
+        ),
+        "action_space": spaces.Box(
+            low=np.asarray([-action_limit], dtype=np.float32),
+            high=np.asarray([action_limit], dtype=np.float32),
+            dtype=np.float32,
+        ),
+    }
+
+
+def _install_numpy_pickle_compat() -> None:
+    """Allow SB3 checkpoints pickled under NumPy 2.x to load under NumPy 1.x."""
+    try:
+        import numpy.core as np_core
+        import numpy.core.multiarray as np_multiarray
+        import numpy.core.numeric as np_numeric
+        import numpy.random._pickle as np_random_pickle
+    except Exception:
+        return
+    sys.modules.setdefault("numpy._core", np_core)
+    sys.modules.setdefault("numpy._core.multiarray", np_multiarray)
+    sys.modules.setdefault("numpy._core.numeric", np_numeric)
+    original_ctor = getattr(np_random_pickle, "__bit_generator_ctor", None)
+    bit_generators = getattr(np_random_pickle, "BitGenerators", {})
+    if original_ctor is None or getattr(original_ctor, "_teleop_compat", False):
+        return
+
+    def _bit_generator_ctor_compat(bit_generator_name="MT19937"):
+        if isinstance(bit_generator_name, type):
+            bit_generator_name = bit_generator_name.__name__
+        if bit_generator_name in bit_generators:
+            return bit_generators[bit_generator_name]()
+        return original_ctor(bit_generator_name)
+
+    _bit_generator_ctor_compat._teleop_compat = True  # type: ignore[attr-defined]
+    np_random_pickle.__bit_generator_ctor = _bit_generator_ctor_compat
 
 
 def _nominal_values(summary: dict[str, Any]) -> dict[str, float | str]:
@@ -492,6 +555,8 @@ def evaluate_policy_on_scenario(
 ) -> dict[str, Any]:
     env = env_factory()
     obs, info = env.reset(seed=int(seed), options=scenario.reset_options())
+    if hasattr(policy, "reset_recurrent_state"):
+        policy.reset_recurrent_state()
     done = False
     final_info = dict(info)
     final_terminated = False
@@ -564,12 +629,14 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
     transparency_power_error = transparency_power_error_array(history)
     transparency_ratio = transparency_ratio_array(history)
     transparency_ratio_error = transparency_ratio - 1.0
+    ratio_metrics = transparency_ratio_metrics(history)
     n = min(t.size, error.size)
     t = t[:n]
     error = error[:n]
     u_v = u_v[: min(u_v.size, n)]
     post = t >= float(scenario.env_switch_time) if t.size else np.zeros(0, dtype=bool)
     du = np.diff(u_v) if u_v.size >= 2 else np.asarray([], dtype=np.float64)
+    ddu = np.diff(u_v, n=2) if u_v.size >= 3 else np.asarray([], dtype=np.float64)
     termination_reason = str(final_info.get("termination_reason", ""))
     failure = bool(
         result["terminated"]
@@ -596,8 +663,13 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
         "post_contact_rms_error_m": _rms(error[post]) if post.size == error.size else 0.0,
         "post_contact_peak_error_m": _peak_abs(error[post]) if post.size == error.size else 0.0,
         "transparency_rmse_w": _rms(transparency_power_error),
-        "transparency_ratio_mean": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
-        "transparency_ratio_error_rmse": _rms(transparency_ratio_error),
+        "transparency_ratio_raw_mean": float(np.mean(transparency_ratio)) if transparency_ratio.size else 0.0,
+        "transparency_ratio_mean": float(ratio_metrics["transparency_ratio_mean"]),
+        "transparency_ratio_median": float(ratio_metrics["transparency_ratio_median"]),
+        "transparency_ratio_raw_error_rmse": _rms(transparency_ratio_error),
+        "transparency_ratio_error_rmse": float(ratio_metrics["transparency_ratio_error_rmse"]),
+        "transparency_ratio_valid_fraction": float(ratio_metrics["transparency_ratio_valid_fraction"]),
+        "transparency_ratio_within_20pct": float(ratio_metrics["transparency_ratio_within_20pct"]),
         "settling_time_s": settling_time(
             t,
             error,
@@ -610,8 +682,11 @@ def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.
         "rms_u_v": _rms(u_v),
         "control_smoothness_mean_abs_delta_v": float(np.mean(np.abs(du))) if du.size else 0.0,
         "control_smoothness_rms_delta_v": _rms(du),
+        "control_smoothness_mean_abs_delta2_v": float(np.mean(np.abs(ddu))) if ddu.size else 0.0,
+        "control_smoothness_rms_delta2_v": _rms(ddu),
         "max_abs_u_v": _peak_abs(u_v),
         "max_abs_delta_u_v": _peak_abs(du),
+        "max_abs_delta2_u_v": _peak_abs(ddu),
         "saturation_fraction": float(np.mean(np.abs(u_v) >= 0.98 * float(action_limit))) if u_v.size else 0.0,
         "failure_flag": int(failure),
         "termination_reason": termination_reason,
@@ -673,7 +748,7 @@ def plot_scenario_result(result: dict[str, Any], out_dir: str | Path) -> None:
     scenario: EvaluationScenario = result["scenario"]
     history = result["history"]
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(out_dir)
     t = history_array(history, "time", dtype=np.float64)
     x_m = history_array(history, "x_m", dtype=np.float64)
     x_s = history_array(history, "x_s", dtype=np.float64)
@@ -699,8 +774,139 @@ def plot_scenario_result(result: dict[str, Any], out_dir: str | Path) -> None:
             ax.axvline(float(scenario.force_release_time), color="tab:orange", ls=":", lw=1.2)
         ax.grid(True, alpha=0.25)
     fig.suptitle(f"{scenario.group}: {scenario.name}")
-    fig.savefig(_save_path(out_dir / f"{safe_stem(scenario.name)}.png"), dpi=150, bbox_inches="tight")
+    stem = safe_stem(scenario.name)
+    fig.savefig(_save_path(out_dir / f"{stem}.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
+    plot_transparency_ratio_monitor(
+        history,
+        out_dir / f"{stem}_transparency_ratio.png",
+        f"{scenario.group}: {scenario.name}",
+        env_switch_time=float(scenario.env_switch_time),
+    )
+
+
+def _plot_tracking_result(result: dict[str, Any], out_dir: str | Path) -> None:
+    scenario: EvaluationScenario = result["scenario"]
+    history = result["history"]
+    out_dir = Path(out_dir)
+    _ensure_dir(out_dir)
+    t = history_array(history, "time", dtype=np.float64)
+    x_m = history_array(history, "x_m", dtype=np.float64)
+    x_s = history_array(history, "x_s", dtype=np.float64)
+    error = history_array(history, "pos_error", dtype=np.float64)
+    stem = safe_stem(scenario.name)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, constrained_layout=True)
+    axes[0].plot(t[: x_m.size], x_m * 1000.0, label="master")
+    axes[0].plot(t[: x_s.size], x_s * 1000.0, label="slave")
+    axes[0].set_ylabel("position [mm]")
+    axes[0].legend(loc="best")
+    axes[1].plot(t[: error.size], error * 1000.0, color="tab:red")
+    axes[1].axhline(0.0, color="0.4", lw=1.0)
+    axes[1].set_ylabel("x_m - x_s [mm]")
+    axes[1].set_xlabel("time [s]")
+    for ax in axes:
+        ax.axvline(float(scenario.env_switch_time), color="0.4", ls="--", lw=1.0)
+        ax.grid(True, alpha=0.25)
+    fig.suptitle(f"{scenario.group}: {scenario.name}: tracking")
+    fig.savefig(_save_path(out_dir / f"{stem}_tracking.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_force_result(result: dict[str, Any], out_dir: str | Path) -> None:
+    scenario: EvaluationScenario = result["scenario"]
+    history = result["history"]
+    out_dir = Path(out_dir)
+    _ensure_dir(out_dir)
+    t = history_array(history, "time", dtype=np.float64)
+    f_h = history_array(history, "F_h", dtype=np.float64)
+    f_env = history_array(history, "F_env", dtype=np.float64)
+    stem = safe_stem(scenario.name)
+
+    fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+    ax.plot(t[: f_h.size], f_h, label="F_h")
+    if f_env.size:
+        ax.plot(t[: f_env.size], f_env, label="F_env")
+    ax.axvline(float(scenario.env_switch_time), color="0.4", ls="--", lw=1.0)
+    if scenario.force_release_time is not None:
+        ax.axvline(float(scenario.force_release_time), color="tab:orange", ls=":", lw=1.2)
+    ax.set_ylabel("force [N]")
+    ax.set_xlabel("time [s]")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best")
+    ax.set_title(f"{scenario.group}: {scenario.name}: force")
+    fig.savefig(_save_path(out_dir / f"{stem}_force.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_control_result(result: dict[str, Any], out_dir: str | Path) -> None:
+    scenario: EvaluationScenario = result["scenario"]
+    history = result["history"]
+    out_dir = Path(out_dir)
+    _ensure_dir(out_dir)
+    t = history_array(history, "time", dtype=np.float64)
+    u_v = history_array(history, "u_v", dtype=np.float64)
+    du = np.diff(u_v) if u_v.size else np.asarray([], dtype=np.float64)
+    stem = safe_stem(scenario.name)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, constrained_layout=True)
+    axes[0].plot(t[: u_v.size], u_v, color="tab:cyan")
+    axes[0].set_ylabel("u_v [V]")
+    axes[1].plot(t[1 : 1 + du.size], du, color="tab:purple")
+    axes[1].axhline(0.0, color="0.4", lw=1.0)
+    axes[1].set_ylabel("delta u_v [V]")
+    axes[1].set_xlabel("time [s]")
+    for ax in axes:
+        ax.axvline(float(scenario.env_switch_time), color="0.4", ls="--", lw=1.0)
+        ax.grid(True, alpha=0.25)
+    fig.suptitle(f"{scenario.group}: {scenario.name}: control")
+    fig.savefig(_save_path(out_dir / f"{stem}_control.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_scenario_detail_results(result: dict[str, Any], out_dir: str | Path) -> None:
+    _plot_tracking_result(result, out_dir)
+    _plot_force_result(result, out_dir)
+    _plot_control_result(result, out_dir)
+
+
+def _npz_array(value: Any) -> np.ndarray:
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (str, bytes, int, float, bool, np.number)):
+        return np.asarray(value)
+    try:
+        arr = np.asarray(value)
+    except Exception:
+        return np.asarray(json.dumps(value, default=str))
+    if arr.dtype == object:
+        try:
+            return arr.astype(np.float64)
+        except (TypeError, ValueError):
+            return np.asarray(json.dumps(value, default=str))
+    return arr
+
+
+def save_scenario_history_npz(
+    result: dict[str, Any],
+    out_dir: str | Path,
+    metrics: dict[str, Any] | None = None,
+) -> Path:
+    scenario: EvaluationScenario = result["scenario"]
+    history = result["history"]
+    out_dir = Path(out_dir)
+    _ensure_dir(out_dir)
+    stem = safe_stem(scenario.name)
+    payload: dict[str, np.ndarray] = {
+        "scenario_json": np.asarray(json.dumps(asdict(scenario), default=str)),
+    }
+    if metrics is not None:
+        payload["metrics_json"] = np.asarray(json.dumps(metrics, default=str))
+    for key, value in history.items():
+        payload[str(key)] = _npz_array(value)
+    out_path = out_dir / f"{stem}.npz"
+    np.savez_compressed(_save_path(out_path), **payload)
+    return out_path
 
 
 def plot_bode(bode_rows: list[dict[str, Any]], out_path: str | Path) -> None:
@@ -728,7 +934,7 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys())
-    with open(path, "w", encoding="utf-8", newline="") as fh:
+    with open(_save_path(path), "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
@@ -736,16 +942,39 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
 
 def _save_path(path: str | Path) -> str | Path:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
+        path.parent.mkdir(parents=True, exist_ok=True)
         return path
     resolved = path.resolve()
+    parent = str(path.parent.resolve())
+    if parent.startswith("\\\\?\\"):
+        parent_text = parent
+    elif parent.startswith("\\\\"):
+        parent_text = "\\\\?\\UNC\\" + parent.lstrip("\\")
+    else:
+        parent_text = "\\\\?\\" + parent
+    os.makedirs(parent_text, exist_ok=True)
     text = str(resolved)
     if text.startswith("\\\\?\\"):
         return text
     if text.startswith("\\\\"):
         return "\\\\?\\UNC\\" + text.lstrip("\\")
     return "\\\\?\\" + text
+
+
+def _ensure_dir(path: str | Path) -> None:
+    path = Path(path)
+    if os.name != "nt":
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    text = str(path.resolve())
+    if text.startswith("\\\\?\\"):
+        dir_text = text
+    elif text.startswith("\\\\"):
+        dir_text = "\\\\?\\UNC\\" + text.lstrip("\\")
+    else:
+        dir_text = "\\\\?\\" + text
+    os.makedirs(dir_text, exist_ok=True)
 
 
 def run_focused_evaluation(
@@ -776,9 +1005,12 @@ def run_focused_evaluation(
             deterministic=deterministic,
         )
         normal_results.append(result)
-        normal_rows.append(compute_non_bode_metrics(result, action_limit=action_limit))
+        metrics = compute_non_bode_metrics(result, action_limit=action_limit)
+        normal_rows.append(metrics)
+        save_scenario_history_npz(result, out_dir / "histories", metrics)
         if save_plots:
             plot_scenario_result(result, out_dir / "plots" / "scenarios")
+            plot_scenario_detail_results(result, out_dir / "plots" / "scenarios")
 
     bode_rows: list[dict[str, Any]] = []
     if include_bode:
@@ -814,14 +1046,28 @@ def run_focused_evaluation(
             "settling_time_s",
             "control_energy_v2_s",
             "control_smoothness_mean_abs_delta_v",
+            "control_smoothness_mean_abs_delta2_v",
+            "transparency_ratio_median",
+            "transparency_ratio_valid_fraction",
+            "transparency_ratio_within_20pct",
             "saturation_fraction",
             "failure_flag",
         ],
         "bode_metrics": ["frequency_rad_s", "gain", "gain_dB", "phase_lag_deg"],
+        "artifacts": {
+            "metrics_csv": "focused_eval_metrics.csv",
+            "history_npz_dir": "histories",
+            "scenario_plots_dir": "plots/scenarios",
+            "scenario_dashboard_pattern": "<scenario>.png",
+            "tracking_plot_pattern": "<scenario>_tracking.png",
+            "force_plot_pattern": "<scenario>_force.png",
+            "control_plot_pattern": "<scenario>_control.png",
+            "transparency_ratio_plot_pattern": "<scenario>_transparency_ratio.png",
+        },
         "env_kwargs": env_kwargs,
         "scenarios": [asdict(scenario) for scenario in scenarios],
     }
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(out_dir)
     write_csv(out_dir / "focused_eval_metrics.csv", normal_rows)
     save_json(out_dir / "focused_eval_summary.json", summary_payload)
     if bode_rows:

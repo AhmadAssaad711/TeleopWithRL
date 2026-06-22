@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,162 @@ def transparency_power_error_array(history: dict[str, Any], suffix: str = "") ->
     return np.asarray([], dtype=np.float64)
 
 
+def monitored_transparency_ratio_array(
+    history: dict[str, Any],
+    suffix: str = "",
+    *,
+    velocity_eps: float = 1e-6,
+    impedance_eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
+    v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
+    f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
+    v_s = history_array(history, f"v_s{suffix}", dtype=np.float64)
+    n = min(f_h.size, v_m.size, f_e.size, v_s.size)
+    if n == 0:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        human_impedance = f_h[:n] / v_m[:n]
+        environment_impedance = f_e[:n] / v_s[:n]
+        ratio = human_impedance / environment_impedance
+    valid = (
+        np.isfinite(ratio)
+        & (np.abs(v_m[:n]) >= abs(float(velocity_eps)))
+        & (np.abs(v_s[:n]) >= abs(float(velocity_eps)))
+        & (np.abs(environment_impedance) >= abs(float(impedance_eps)))
+    )
+    return np.where(valid, ratio, np.nan).astype(np.float64, copy=False), valid.astype(bool, copy=False)
+
+
+def transparency_ratio_metrics(
+    history: dict[str, Any],
+    suffix: str = "",
+    *,
+    tolerance: float = 0.20,
+) -> dict[str, float]:
+    ratio, valid = monitored_transparency_ratio_array(history, suffix=suffix)
+    finite = np.isfinite(ratio)
+    values = ratio[finite]
+    if values.size == 0:
+        return {
+            "transparency_ratio_mean": 0.0,
+            "transparency_ratio_median": 0.0,
+            "transparency_ratio_error_rmse": 0.0,
+            "transparency_ratio_valid_fraction": 0.0,
+            "transparency_ratio_within_20pct": 0.0,
+        }
+    lower = 1.0 - abs(float(tolerance))
+    upper = 1.0 + abs(float(tolerance))
+    return {
+        "transparency_ratio_mean": float(np.mean(values)),
+        "transparency_ratio_median": float(np.median(values)),
+        "transparency_ratio_error_rmse": float(np.sqrt(np.mean((values - 1.0) ** 2))),
+        "transparency_ratio_valid_fraction": float(np.mean(valid)) if valid.size else 0.0,
+        "transparency_ratio_within_20pct": float(np.mean((values >= lower) & (values <= upper))),
+    }
+
+
+def _rolling_nanmedian(values: np.ndarray, window: int) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0:
+        return values
+    window = max(1, min(int(window), values.size))
+    half = window // 2
+    out = np.full(values.size, np.nan, dtype=np.float64)
+    min_count = max(1, window // 5)
+    for idx in range(values.size):
+        lo = max(0, idx - half)
+        hi = min(values.size, idx + half + 1)
+        segment = values[lo:hi]
+        segment = segment[np.isfinite(segment)]
+        if segment.size >= min_count:
+            out[idx] = float(np.median(segment))
+    return out
+
+
+def _plot_save_path(path: str | Path) -> str | Path:
+    path = Path(path)
+    if os.name != "nt":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    resolved = path.resolve()
+    parent = str(path.parent.resolve())
+    if parent.startswith("\\\\?\\"):
+        parent_text = parent
+    elif parent.startswith("\\\\"):
+        parent_text = "\\\\?\\UNC\\" + parent.lstrip("\\")
+    else:
+        parent_text = "\\\\?\\" + parent
+    os.makedirs(parent_text, exist_ok=True)
+    text = str(resolved)
+    if text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def plot_transparency_ratio_monitor(
+    history: dict[str, Any],
+    out_path: str | Path,
+    title: str,
+    *,
+    env_switch_time: float | None = None,
+    smooth_seconds: float = 0.5,
+) -> None:
+    t = history_array(history, "time", dtype=np.float64)
+    raw_ratio = transparency_ratio_array(history)
+    monitored_ratio, _ = monitored_transparency_ratio_array(history)
+    n = min(t.size, raw_ratio.size, monitored_ratio.size)
+    if n == 0:
+        return
+    t = t[:n]
+    raw_ratio = raw_ratio[:n]
+    monitored_ratio = monitored_ratio[:n]
+    dt = float(np.nanmedian(np.diff(t))) if t.size >= 2 else float(cfg.RL_DT)
+    window = max(5, int(round(float(smooth_seconds) / max(dt, 1e-9))))
+    smoothed = _rolling_nanmedian(monitored_ratio, window)
+    metrics = transparency_ratio_metrics(history)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True, constrained_layout=True)
+    finite_raw = np.isfinite(raw_ratio)
+    axes[0].plot(t[finite_raw], raw_ratio[finite_raw], lw=1.1, color="tab:brown", label="raw ratio")
+    axes[0].axhline(1.0, color="black", lw=1.1, ls="--", label="ideal = 1")
+    axes[0].set_yscale("symlog", linthresh=1.0)
+    axes[0].set_ylabel("(F_h/v_m)/(F_e/v_s)")
+    axes[0].set_title(f"{title}: raw transparency ratio")
+    axes[0].grid(True, alpha=0.25)
+    axes[0].legend(loc="best", framealpha=0.92)
+
+    finite_smooth = np.isfinite(smoothed)
+    axes[1].axhspan(0.8, 1.2, color="tab:green", alpha=0.12, label="+/-20% band")
+    axes[1].plot(t[finite_smooth], smoothed[finite_smooth], lw=2.0, color="tab:blue", label="0.5 s rolling median")
+    axes[1].axhline(1.0, color="black", lw=1.1, ls="--", label="ideal = 1")
+    axes[1].axhline(0.0, color="0.35", lw=0.8, alpha=0.8)
+    axes[1].set_ylabel("monitored ratio")
+    axes[1].set_xlabel("time [s]")
+    axes[1].set_ylim(-2.5, 4.0)
+    axes[1].grid(True, alpha=0.25)
+    axes[1].legend(loc="best", framealpha=0.92)
+    axes[1].text(
+        0.01,
+        0.03,
+        (
+            f"median={metrics['transparency_ratio_median']:.3g}, "
+            f"valid={100.0 * metrics['transparency_ratio_valid_fraction']:.1f}%, "
+            f"within20={100.0 * metrics['transparency_ratio_within_20pct']:.1f}%"
+        ),
+        transform=axes[1].transAxes,
+        fontsize=9,
+        bbox={"facecolor": "white", "alpha": 0.80, "edgecolor": "none"},
+    )
+    if env_switch_time is not None:
+        for ax in axes:
+            ax.axvline(float(env_switch_time), color="0.4", ls="--", lw=1.0)
+    fig.savefig(_plot_save_path(out_path), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def json_default(value: Any):
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -173,7 +330,7 @@ def json_default(value: Any):
 def save_json(path: str | Path, payload: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with open(_plot_save_path(path), "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, default=json_default)
 
 
@@ -189,7 +346,7 @@ def save_history_npz(history: dict[str, Any], out_path: str | Path) -> None:
                 payload[key] = np.asarray(value, dtype=object)
         else:
             payload[key] = value
-    np.savez(out_path, **payload)
+    np.savez(_plot_save_path(out_path), **payload)
 
 
 def q_gap(q_values: np.ndarray) -> float:
@@ -332,6 +489,7 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     transparency_power_error = transparency_power_error_array(history)
     transparency_ratio = transparency_ratio_array(history)
     transparency_error = transparency_ratio - 1.0
+    monitored_ratio_metrics = transparency_ratio_metrics(history)
     f_h = history_array(history, "F_h", dtype=np.float64)
     f_e = history_array(history, "F_e", dtype=np.float64)
     force_error = f_e - f_h if f_h.size and f_e.size else np.asarray([], dtype=np.float64)
@@ -343,6 +501,7 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
     acceleration_error = a_m - a_s if a_m.size and a_s.size else np.asarray([], dtype=np.float64)
     u_v = history_array(history, "u_v", dtype=np.float64)
     delta_u = np.diff(u_v) if u_v.size >= 2 else np.asarray([], dtype=np.float64)
+    delta2_u = np.diff(u_v, n=2) if u_v.size >= 3 else np.asarray([], dtype=np.float64)
     time_s = history_array(history, "time", dtype=np.float64)
     invalid = history_array(history, "invalid_state", dtype=np.float64)
     if time_s.size >= 2:
@@ -379,9 +538,15 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
         "acceleration_error_rmse_mps2": _rmse(acceleration_error),
         "force_rmse_n": _rmse(force_error),
         "transparency_rmse_w": _rmse(transparency_power_error),
-        "transparency_ratio_mean": transparency_ratio_mean,
+        "transparency_ratio_raw_mean": transparency_ratio_mean,
+        "transparency_ratio_raw_rmse": _rmse(transparency_ratio),
+        "transparency_ratio_raw_error_rmse": _rmse(transparency_error),
+        "transparency_ratio_mean": float(monitored_ratio_metrics["transparency_ratio_mean"]),
+        "transparency_ratio_median": float(monitored_ratio_metrics["transparency_ratio_median"]),
         "transparency_ratio_rmse": _rmse(transparency_ratio),
-        "transparency_ratio_error_rmse": _rmse(transparency_error),
+        "transparency_ratio_error_rmse": float(monitored_ratio_metrics["transparency_ratio_error_rmse"]),
+        "transparency_ratio_valid_fraction": float(monitored_ratio_metrics["transparency_ratio_valid_fraction"]),
+        "transparency_ratio_within_20pct": float(monitored_ratio_metrics["transparency_ratio_within_20pct"]),
         "mean_abs_u_v": float(np.mean(np.abs(u_v))) if u_v.size else 0.0,
         "rms_u_v": _rmse(u_v),
         "control_energy_v2_s": float(np.sum(u_v ** 2) * dt_s) if u_v.size else 0.0,
@@ -390,6 +555,9 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
         "mean_abs_delta_u_v": float(np.mean(np.abs(delta_u))) if delta_u.size else 0.0,
         "rms_delta_u_v": _rmse(delta_u),
         "max_abs_delta_u_v": float(np.max(np.abs(delta_u))) if delta_u.size else 0.0,
+        "mean_abs_delta2_u_v": float(np.mean(np.abs(delta2_u))) if delta2_u.size else 0.0,
+        "rms_delta2_u_v": _rmse(delta2_u),
+        "max_abs_delta2_u_v": float(np.max(np.abs(delta2_u))) if delta2_u.size else 0.0,
         "pre_switch_tracking_rmse_m": _rmse(pos_error, pre_mask),
         "post_switch_tracking_rmse_m": _rmse(pos_error, post_mask),
         "pre_switch_force_rmse_n": _rmse(force_error, pre_mask),
