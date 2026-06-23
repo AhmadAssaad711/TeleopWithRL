@@ -899,6 +899,9 @@ def _build_model(
 ) -> Any:
     require_sb3()
     algo = str(algo)
+    if str(os.environ.get("TELEOP_ENABLE_TENSORBOARD", "")).strip().lower() not in {"1", "true", "yes"}:
+        tensorboard_log = None
+
     common_kwargs = {
         "env": env,
         "tensorboard_log": tensorboard_log,

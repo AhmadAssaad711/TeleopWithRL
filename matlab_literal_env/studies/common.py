@@ -385,8 +385,12 @@ def greedy_q_action(q_values: np.ndarray, action_levels: list[float] | tuple[flo
 
 def mk_run_dirs(base_dir: str | Path) -> dict[str, str]:
     base = Path(base_dir)
-    rel = base.relative_to(package_root())
-    tb_root = Path.home() / "AppData" / "Local" / "TeleopWithRL_tb" / rel
+    tb_override = os.environ.get("TELEOP_TENSORBOARD_ROOT")
+    if tb_override:
+        rel = base.relative_to(package_root())
+        tb_root = Path(tb_override) / rel
+    else:
+        tb_root = base / "tb"
     paths = {
         "base": str(base),
         "models": str(base / "m"),

@@ -333,10 +333,7 @@ def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def aggregate_focused_metrics(path: Path) -> dict[str, float]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
+    rows = _read_csv_rows(path)
     if not rows:
         return {}
 

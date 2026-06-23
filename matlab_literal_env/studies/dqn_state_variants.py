@@ -235,6 +235,16 @@ def _custom_acceleration_error(obs: np.ndarray, info: dict[str, Any]) -> float:
     ) / _acceleration_scale()
 
 
+def _custom_master_acceleration(obs: np.ndarray, info: dict[str, Any]) -> float:
+    del obs
+    return _info_float(info, "a_m_signal") / _acceleration_scale()
+
+
+def _custom_slave_acceleration(obs: np.ndarray, info: dict[str, Any]) -> float:
+    del obs
+    return _info_float(info, "a_s_signal") / _acceleration_scale()
+
+
 def _custom_force_diff(obs: np.ndarray, info: dict[str, Any]) -> float:
     del obs
     return (
@@ -355,13 +365,13 @@ _CUSTOM_STATE_FEATURES: dict[str, StateFeatureSpec] = {
         "x_m_ddot",
         "Master acceleration from the plant derivative.",
         "x_m_ddot / acceleration_scale",
-        lambda obs, info: _info_float(info, "a_m_signal") / _acceleration_scale(),
+        _custom_master_acceleration,
     ),
     "x_s_ddot": StateFeatureSpec(
         "x_s_ddot",
         "Slave acceleration from the plant derivative.",
         "x_s_ddot / acceleration_scale",
-        lambda obs, info: _info_float(info, "a_s_signal") / _acceleration_scale(),
+        _custom_slave_acceleration,
     ),
     "acceleration_error": StateFeatureSpec(
         "acceleration_error",
