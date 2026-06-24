@@ -932,7 +932,6 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys())
     with open(_save_path(path), "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)

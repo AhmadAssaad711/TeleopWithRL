@@ -1124,8 +1124,16 @@ def train_policy_gradient_variant(
         progress_label=label,
         progress_update_timesteps=50,
     )
-    model.learn(total_timesteps=total_timesteps, callback=callback)
-    train_env.close()
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=callback)
+    finally:
+        try:
+            train_env.close()
+        finally:
+            try:
+                model.env = None
+            except Exception:
+                pass
 
     episode_returns = np.asarray(callback.episode_returns, dtype=np.float64)
     episode_tracking = np.asarray(callback.episode_tracking_rmse, dtype=np.float64)

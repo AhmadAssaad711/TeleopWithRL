@@ -329,14 +329,12 @@ def json_default(value: Any):
 
 def save_json(path: str | Path, payload: dict[str, Any]) -> None:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     with open(_plot_save_path(path), "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, default=json_default)
 
 
 def save_history_npz(history: dict[str, Any], out_path: str | Path) -> None:
     out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {}
     for key, value in history.items():
         if isinstance(value, list):

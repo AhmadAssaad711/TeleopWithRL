@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import math
 import os
 import sys
@@ -15,6 +16,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -288,10 +293,18 @@ def build_auxiliary_variants() -> tuple[AuxiliaryVariant, ...]:
 
 def _plot_save_path(path: str | Path) -> str | Path:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
+        path.parent.mkdir(parents=True, exist_ok=True)
         return path
     resolved = path.resolve()
+    parent = str(path.parent.resolve())
+    if parent.startswith("\\\\?\\"):
+        parent_text = parent
+    elif parent.startswith("\\\\"):
+        parent_text = "\\\\?\\UNC\\" + parent.lstrip("\\")
+    else:
+        parent_text = "\\\\?\\" + parent
+    os.makedirs(parent_text, exist_ok=True)
     text = str(resolved)
     if text.startswith("\\\\?\\"):
         return text
@@ -329,6 +342,19 @@ def _resolve_device(device: str) -> torch.device:
     if str(device) == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(str(device))
+
+
+def _configure_torch_runtime() -> None:
+    try:
+        num_threads = int(os.environ.get("TELEOP_TORCH_NUM_THREADS", "1"))
+    except ValueError:
+        num_threads = 1
+    num_threads = max(1, int(num_threads))
+    torch.set_num_threads(num_threads)
+    try:
+        torch.set_num_interop_threads(max(1, int(os.environ.get("TELEOP_TORCH_INTEROP_THREADS", "1"))))
+    except (RuntimeError, ValueError):
+        pass
 
 
 def _as_float(value: Any, default: float = math.nan) -> float:
@@ -547,7 +573,6 @@ def _save_checkpoint(
     model_hyperparameters: dict[str, Any],
 ) -> None:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -566,6 +591,68 @@ def _save_checkpoint(
         },
         _plot_save_path(path),
     )
+
+
+def _save_partial_checkpoint(
+    path: str | Path,
+    *,
+    model: GruAuxActorCritic,
+    optimizer: torch.optim.Optimizer,
+    variant: AuxiliaryVariant,
+    total_steps: int,
+    episode_index: int,
+    episode_returns: list[float],
+    episode_tracking: list[float],
+    episode_transparency: list[float],
+    episode_ratio_error: list[float],
+    episode_invalid: list[float],
+    episode_steps: list[int],
+    episode_completed: list[float],
+    losses: dict[str, list[float]],
+    eval_steps: list[int],
+    eval_mean_reward: list[float],
+    eval_tracking: list[float],
+    eval_transparency: list[float],
+    eval_ratio_error: list[float],
+) -> None:
+    torch.save(
+        {
+            "variant_key": variant.key,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "total_steps": int(total_steps),
+            "episode_index": int(episode_index),
+            "episode_returns": list(episode_returns),
+            "episode_tracking": list(episode_tracking),
+            "episode_transparency": list(episode_transparency),
+            "episode_ratio_error": list(episode_ratio_error),
+            "episode_invalid": list(episode_invalid),
+            "episode_steps": list(episode_steps),
+            "episode_completed": list(episode_completed),
+            "losses": {str(key): list(values) for key, values in losses.items()},
+            "eval_steps": list(eval_steps),
+            "eval_mean_reward": list(eval_mean_reward),
+            "eval_tracking": list(eval_tracking),
+            "eval_transparency": list(eval_transparency),
+            "eval_ratio_error": list(eval_ratio_error),
+        },
+        _plot_save_path(path),
+    )
+
+
+def _load_partial_checkpoint(path: str | Path, *, model: GruAuxActorCritic, optimizer: torch.optim.Optimizer, variant: AuxiliaryVariant, device: torch.device) -> dict[str, Any] | None:
+    if not _file_exists(path):
+        return None
+    load_path = _long_path(path)
+    try:
+        checkpoint = torch.load(load_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(load_path, map_location=device)
+    if str(checkpoint.get("variant_key", "")) != variant.key:
+        return None
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return dict(checkpoint)
 
 
 def load_gru_aux_policy(path: str | Path, *, device: torch.device) -> GruAuxPolicy:
@@ -701,7 +788,7 @@ def run_focused_eval_for_policy(
     save_plots: bool,
     focused_limit: int | None,
 ) -> dict[str, float]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(_long_path(out_dir), exist_ok=True)
     scenarios = build_focused_scenarios(summary)
     if focused_limit is not None:
         scenarios = scenarios[: max(1, int(focused_limit))]
@@ -845,12 +932,52 @@ def train_variant(
     eval_transparency: list[float] = []
     eval_ratio_error: list[float] = []
     total_steps = 0
+
+    partial_checkpoint_path = Path(dirs["logs"]) / "partial_checkpoint.pt"
+    if bool(args.resume_partial):
+        partial = _load_partial_checkpoint(
+            partial_checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            variant=variant,
+            device=device,
+        )
+        if partial:
+            total_steps = int(partial.get("total_steps", 0) or 0)
+            episode_returns = [float(value) for value in partial.get("episode_returns", [])]
+            episode_tracking = [float(value) for value in partial.get("episode_tracking", [])]
+            episode_transparency = [float(value) for value in partial.get("episode_transparency", [])]
+            episode_ratio_error = [float(value) for value in partial.get("episode_ratio_error", [])]
+            episode_invalid = [float(value) for value in partial.get("episode_invalid", [])]
+            episode_steps = [int(value) for value in partial.get("episode_steps", [])]
+            episode_completed = [float(value) for value in partial.get("episode_completed", [])]
+            loaded_losses = dict(partial.get("losses", {}))
+            for key in losses:
+                losses[key] = [float(value) for value in loaded_losses.get(key, [])]
+            eval_steps = [int(value) for value in partial.get("eval_steps", [])]
+            eval_mean_reward = [float(value) for value in partial.get("eval_mean_reward", [])]
+            eval_tracking = [float(value) for value in partial.get("eval_tracking", [])]
+            eval_transparency = [float(value) for value in partial.get("eval_transparency", [])]
+            eval_ratio_error = [float(value) for value in partial.get("eval_ratio_error", [])]
+            print(
+                f"[resume] {variant.key}: {total_steps}/{target_timesteps} timesteps, "
+                f"{len(episode_returns)} episodes from {partial_checkpoint_path}",
+                flush=True,
+            )
     policy = GruAuxPolicy(model, action_low=action_low, action_high=action_high, device=device)
     progress_bar = None
     if tqdm is not None:
-        progress_bar = tqdm(total=target_timesteps, desc=f"{variant.key} train", unit="ts", dynamic_ncols=True)
+        progress_bar = tqdm(
+            total=target_timesteps,
+            initial=min(int(total_steps), int(target_timesteps)),
+            desc=f"{variant.key} train",
+            unit="ts",
+            dynamic_ncols=True,
+        )
 
-    episode_index = 0
+    episode_index = int(len(episode_returns))
+    checkpoint_every_timesteps = int(max(0, args.checkpoint_every_timesteps))
+    last_checkpoint_steps = int(total_steps)
     while total_steps < target_timesteps:
         batch = collect_episode(
             train_env,
@@ -917,6 +1044,32 @@ def train_variant(
             eval_transparency.append(float(eval_metrics.get("transparency_rmse_w", 0.0)))
             eval_ratio_error.append(float(eval_metrics.get("transparency_ratio_error_rmse", 0.0)))
         episode_index += 1
+        if checkpoint_every_timesteps and total_steps - last_checkpoint_steps >= checkpoint_every_timesteps:
+            _save_partial_checkpoint(
+                partial_checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                variant=variant,
+                total_steps=total_steps,
+                episode_index=episode_index,
+                episode_returns=episode_returns,
+                episode_tracking=episode_tracking,
+                episode_transparency=episode_transparency,
+                episode_ratio_error=episode_ratio_error,
+                episode_invalid=episode_invalid,
+                episode_steps=episode_steps,
+                episode_completed=episode_completed,
+                losses=losses,
+                eval_steps=eval_steps,
+                eval_mean_reward=eval_mean_reward,
+                eval_tracking=eval_tracking,
+                eval_transparency=eval_transparency,
+                eval_ratio_error=eval_ratio_error,
+            )
+            last_checkpoint_steps = int(total_steps)
+            gc.collect()
+        elif episode_index % 25 == 0:
+            gc.collect()
 
     if progress_bar is not None:
         progress_bar.close()
@@ -1086,6 +1239,8 @@ def train_variant(
             "value_loss_final": _final_value(losses["value_loss"]),
         },
     )
+    if _file_exists(partial_checkpoint_path):
+        os.remove(_long_path(partial_checkpoint_path))
     return summary, policy
 
 
@@ -1179,6 +1334,7 @@ def _select_reward_ablation(key: str):
 
 
 def run(args: argparse.Namespace) -> list[dict[str, Any]]:
+    _configure_torch_runtime()
     device = _resolve_device(args.device)
     root = policy_gradient_suite_root(args.fe_mode, args.study_name)
     root.mkdir(parents=True, exist_ok=True)
@@ -1223,6 +1379,15 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
     )
 
     variants = build_auxiliary_variants()
+    if args.only:
+        requested = {str(key) for key in args.only}
+        variants = tuple(
+            variant
+            for variant in variants
+            if variant.key in requested or _variant_dir_name(variant) in requested
+        )
+        if not variants:
+            raise ValueError(f"No auxiliary variants matched --only={sorted(requested)}")
     current_rows: dict[str, dict[str, Any]] = {}
     rows: list[dict[str, Any]] = collect_available_rows(root, variants, current_rows)
     for index, variant in enumerate(variants, start=1):
@@ -1359,6 +1524,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--disable-terminate-on-error", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--only", nargs="*", default=None, help="Optional auxiliary variant key/dir filter, e.g. G1_gru_prediction or G1p.")
+    parser.add_argument("--checkpoint-every-timesteps", type=int, default=50_000)
+    parser.add_argument("--resume-partial", dest="resume_partial", action="store_true", default=True)
+    parser.add_argument("--no-resume-partial", dest="resume_partial", action="store_false")
     return parser.parse_args()
 
 

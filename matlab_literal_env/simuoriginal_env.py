@@ -396,6 +396,9 @@ class SimuOriginalReplicaEnv(gym.Env):
         return float(self.last_u_v)
 
     def _to_env_state(self, replica_state: np.ndarray) -> np.ndarray:
+        replica_state = np.asarray(replica_state, dtype=np.float64).reshape(-1)
+        if replica_state.size != self.N_STATE:
+            raise ValueError(f"replica_state must have {self.N_STATE} entries, got {replica_state.size}")
         return np.array(
             [
                 replica_state[3],
@@ -414,8 +417,65 @@ class SimuOriginalReplicaEnv(gym.Env):
             dtype=np.float64,
         )
 
+    def _state_vector_or_none(self, values) -> np.ndarray | None:
+        try:
+            arr = np.asarray(values, dtype=np.float64).reshape(-1)
+        except Exception:
+            return None
+        if arr.size != self.N_STATE or not np.all(np.isfinite(arr)):
+            return None
+        return arr.astype(np.float64, copy=True)
+
+    def _mark_invalid_state(self, reason: str) -> None:
+        self.invalid_state = True
+        if self.invalid_reason is None:
+            self.invalid_reason = reason
+        if self.termination_reason is None:
+            self.termination_reason = self.invalid_reason
+        if self.singularity_time is None:
+            self.singularity_time = float(getattr(self, "t", 0.0))
+
+    def _repair_with_safe_terminal_state(self, reason: str) -> None:
+        self._mark_invalid_state(reason)
+        self.replica_state = build_saved_simuoriginal_state(
+            self.parms,
+            init_position_mode=self.reset_position_mode,
+        ).as_array()
+        self.state = self._to_env_state(self.replica_state)
+
+    def _ensure_replica_state_vector(self, reason: str = "invalid_replica_state") -> bool:
+        state = self._state_vector_or_none(self.replica_state)
+        if state is None:
+            self._repair_with_safe_terminal_state(reason)
+            return False
+        self.replica_state = state
+        return True
+
+    def _ensure_env_state_vector(self, reason: str = "invalid_env_state") -> bool:
+        state = self._state_vector_or_none(self.state)
+        if state is not None:
+            self.state = state
+            return True
+
+        replica_state = self._state_vector_or_none(self.replica_state)
+        if replica_state is not None:
+            try:
+                refreshed = self._to_env_state(replica_state)
+            except Exception:
+                refreshed = None
+            refreshed_state = self._state_vector_or_none(refreshed)
+            if refreshed_state is not None:
+                self.replica_state = replica_state
+                self.state = refreshed_state
+                self._mark_invalid_state(reason)
+                return False
+
+        self._repair_with_safe_terminal_state(reason)
+        return False
+
     def _volumes_are_valid(self, replica_state: np.ndarray) -> bool:
-        if not np.all(np.isfinite(replica_state)):
+        replica_state = self._state_vector_or_none(replica_state)
+        if replica_state is None:
             return False
         xm = float(replica_state[3])
         xs = float(replica_state[7])
@@ -430,6 +490,9 @@ class SimuOriginalReplicaEnv(gym.Env):
     def _stroke_is_valid(self, replica_state: np.ndarray) -> bool:
         if not self.enforce_stroke_limit:
             return True
+        replica_state = self._state_vector_or_none(replica_state)
+        if replica_state is None:
+            return False
         xm = float(replica_state[3])
         xs = float(replica_state[7])
         return bool(
@@ -439,7 +502,11 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
 
     def _apply_stroke_clamp(self, replica_state: np.ndarray) -> tuple[np.ndarray, bool]:
-        clamped = np.asarray(replica_state, dtype=np.float64).copy()
+        replica_state = self._state_vector_or_none(replica_state)
+        if replica_state is None:
+            self._repair_with_safe_terminal_state("invalid_replica_state")
+            return self.replica_state.copy(), False
+        clamped = replica_state.copy()
 
         hit = False
         stroke_min = self.stroke_min
@@ -479,8 +546,10 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
 
     def _update_signals(self) -> None:
+        self._ensure_replica_state_vector("invalid_replica_state")
         self._update_environment_mode()
         self.state = self._to_env_state(self.replica_state)
+        self._ensure_env_state_vector("invalid_env_state")
         self.F_h_nominal, self.F_h_noise, self.F_h = self._force_components(self.t)
         self.F_h = float(self.F_h)
         if self.fe_mode == FE_MODE_DYNAMICS:
@@ -498,15 +567,23 @@ class SimuOriginalReplicaEnv(gym.Env):
                 self.state[self.IX_VS],
                 self.runtime_profile,
             )
-        deriv = self._derivative_fn(self.t, self.replica_state)
-        if np.all(np.isfinite(deriv)):
+        try:
+            deriv = self._derivative_fn(self.t, self.replica_state)
+        except Exception:
+            deriv = None
+            self._mark_invalid_state("derivative_failure")
+        if deriv is not None and np.all(np.isfinite(deriv)):
             self.a_m_signal = float(deriv[2])
             self.a_s_signal = float(deriv[6])
         else:
+            if deriv is not None:
+                self._mark_invalid_state("derivative_nonfinite")
             self.a_m_signal = 0.0
             self.a_s_signal = 0.0
 
     def _edge_action_scale(self) -> float:
+        if not self._ensure_replica_state_vector("invalid_replica_state"):
+            return 1.0
         buffer_m = float(self.edge_action_damping_buffer_m)
         if buffer_m <= 0.0:
             return 1.0
@@ -523,6 +600,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         return self.x_eq
 
     def get_centered_positions(self) -> tuple[float, float]:
+        self._ensure_env_state_vector("invalid_env_state")
         return (
             float(self.state[self.IX_XM] - self.x_eq),
             float(self.state[self.IX_XS] - self.x_eq),
@@ -711,6 +789,7 @@ class SimuOriginalReplicaEnv(gym.Env):
     def _log_step(self, reward: float, track_term: float, effort_term: float, transparency_term: float) -> None:
         if self._history is None:
             return
+        self._ensure_env_state_vector("invalid_env_state")
         x_m_centered, x_s_centered = self.get_centered_positions()
         pos_error = float(self.state[self.IX_XM] - self.state[self.IX_XS])
         human_impedance = force_velocity_impedance(self.F_h, self.state[self.IX_VM])
@@ -781,39 +860,44 @@ class SimuOriginalReplicaEnv(gym.Env):
         self.hit_stroke_stop = False
         clamp_stroke = bool(self.enforce_stroke_limit and self.stroke_limit_mode == "clamp")
 
-        for _ in range(self.sub_steps):
-            if clamp_stroke:
-                self.replica_state, hit_stop = self._apply_stroke_clamp(self.replica_state)
-                self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
-            if not self._volumes_are_valid(self.replica_state):
-                self.invalid_state = True
-                self.invalid_reason = "volume_singularity"
-                self.singularity_time = float(self.t)
-                break
-            if not clamp_stroke and not self._stroke_is_valid(self.replica_state):
-                self.invalid_state = True
-                self.invalid_reason = "stroke_limit"
-                self.singularity_time = float(self.t)
-                break
-            next_state = _rk4_step(self._derivative_fn, self.t, self.replica_state, self.internal_dt)
-            self.t += self.internal_dt
-            if clamp_stroke:
-                next_state, hit_stop = self._apply_stroke_clamp(next_state)
-                self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
-            if not self._volumes_are_valid(next_state):
-                self.invalid_state = True
-                self.invalid_reason = "volume_singularity"
-                self.singularity_time = float(self.t)
-                break
-            if not clamp_stroke and not self._stroke_is_valid(next_state):
-                self.invalid_state = True
-                self.invalid_reason = "stroke_limit"
-                self.singularity_time = float(self.t)
-                break
-            self.replica_state = next_state
+        if not self._ensure_replica_state_vector("invalid_replica_state"):
+            self.invalid_state = True
+
+        if not self.invalid_state:
+            for _ in range(self.sub_steps):
+                if clamp_stroke:
+                    self.replica_state, hit_stop = self._apply_stroke_clamp(self.replica_state)
+                    self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
+                if not self._volumes_are_valid(self.replica_state):
+                    self._mark_invalid_state("volume_singularity")
+                    break
+                if not clamp_stroke and not self._stroke_is_valid(self.replica_state):
+                    self._mark_invalid_state("stroke_limit")
+                    break
+                try:
+                    next_state = _rk4_step(self._derivative_fn, self.t, self.replica_state, self.internal_dt)
+                except Exception:
+                    self._mark_invalid_state("integration_failure")
+                    break
+                self.t += self.internal_dt
+                next_state = self._state_vector_or_none(next_state)
+                if next_state is None:
+                    self._mark_invalid_state("integration_invalid_state")
+                    break
+                if clamp_stroke:
+                    next_state, hit_stop = self._apply_stroke_clamp(next_state)
+                    self.hit_stroke_stop = self.hit_stroke_stop or hit_stop
+                if not self._volumes_are_valid(next_state):
+                    self._mark_invalid_state("volume_singularity")
+                    break
+                if not clamp_stroke and not self._stroke_is_valid(next_state):
+                    self._mark_invalid_state("stroke_limit")
+                    break
+                self.replica_state = next_state
 
         self.step_count += 1
         self._update_signals()
+        self._ensure_env_state_vector("invalid_env_state")
 
         pos_error = float(self.state[self.IX_XM] - self.state[self.IX_XS])
         norm_pos_error = float(

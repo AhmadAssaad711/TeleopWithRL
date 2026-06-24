@@ -305,13 +305,13 @@ def build_reward_spec(ablation: RewardAblation, scale_catalog: dict[str, Any]) -
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(path)
     fieldnames: list[str] = []
     for row in rows:
         for key in row.keys():
             if key not in fieldnames:
                 fieldnames.append(key)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    with open(_plot_save_path(path), "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -475,10 +475,18 @@ def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
 
 def _plot_save_path(path: str | Path) -> str | Path:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
+        path.parent.mkdir(parents=True, exist_ok=True)
         return path
     resolved = path.resolve()
+    parent = str(path.parent.resolve())
+    if parent.startswith("\\\\?\\"):
+        parent_text = parent
+    elif parent.startswith("\\\\"):
+        parent_text = "\\\\?\\UNC\\" + parent.lstrip("\\")
+    else:
+        parent_text = "\\\\?\\" + parent
+    os.makedirs(parent_text, exist_ok=True)
     text = str(resolved)
     if text.startswith("\\\\?\\"):
         return text

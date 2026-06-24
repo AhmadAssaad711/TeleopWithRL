@@ -267,8 +267,9 @@ def build_state_spec(formulation: Formulation) -> dict[str, Any]:
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    path = Path(path)
+    os.makedirs(_long_path(path.parent), exist_ok=True)
+    with open(_long_path(path), "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(SUMMARY_FIELDS))
         writer.writeheader()
         for row in rows:
