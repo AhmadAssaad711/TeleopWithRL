@@ -17,7 +17,7 @@ notebooks.
 - `matlab_env/`
   - Actual MATLAB/Simulink reference environment.
   - Contains the focused `SimuOriginal.slx` model used as the MATLAB reference.
-- `matlab_literal_env/`
+- `matlab_env_python_replica/`
   - Python environment that mirrors the MATLAB/Simulink plant as literally as
     possible.
   - Contains the SimuOriginal replica, Gym-style environment wrapper, study
@@ -52,10 +52,10 @@ The notebooks are intentionally separated into their own top-level folder.
 The MATLAB pieces are split deliberately:
 
 - `matlab_env/` is for the actual MATLAB/Simulink environment.
-- `matlab_literal_env/` is the Python reproduction of the MATLAB dynamics.
+- `matlab_env_python_replica/` is the Python reproduction of the MATLAB dynamics.
 
 The active MATLAB-parity work is centered on `matlab_env/SimuOriginal.slx`.
-The replica constants live in `matlab_literal_env/simuoriginal_replica.py`.
+The replica constants live in `matlab_env_python_replica/simuoriginal_replica.py`.
 
 Current parity notes:
 
@@ -82,10 +82,10 @@ Tracked result organization lives in `results_index/`:
 
 Raw generated outputs, when present locally, usually live under:
 
-- `matlab_literal_env/results/`
-- `matlab_literal_env/dqn_experiments/results/`
-- `matlab_literal_env/ql_experiments/results/`
-- `matlab_literal_env/policy_gradient_experiments/results/`
+- `matlab_env_python_replica/results/`
+- `matlab_env_python_replica/dqn_experiments/results/`
+- `matlab_env_python_replica/ql_experiments/results/`
+- `matlab_env_python_replica/policy_gradient_experiments/results/`
 
 ## Setup
 
@@ -112,5 +112,5 @@ python -m pytest
 - Keep notebooks in `notebooks/`; they are the main deliverable.
 - Keep MATLAB/Simulink source in `matlab_env/`.
 - Keep replica source and notebook-called experiment launchers in
-  `matlab_literal_env/`.
+  `matlab_env_python_replica/`.
 - Keep generated results out of Git and index them through `results_index/`.

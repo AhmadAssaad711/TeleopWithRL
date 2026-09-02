@@ -39,7 +39,7 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
     cmd = [
         _python_exe(),
         "-m",
-        "TeleopWithRL.matlab_literal_env.policy_gradient_experiments.run_policy_gradient_experiments",
+        "TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.run_policy_gradient_experiments",
         "--algo",
         args.algo,
         "--study-name",

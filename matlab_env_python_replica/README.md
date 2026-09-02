@@ -1,7 +1,6 @@
-# MATLAB-Literal Environment
+# Python Replica Environment
 
-This folder groups the Python work that mirrors the Simulink/MATLAB plant as
-literally as possible.
+This folder groups the Python work that mirrors the Simulink/MATLAB plant.
 
 Important pieces:
 

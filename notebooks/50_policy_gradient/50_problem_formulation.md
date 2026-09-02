@@ -9,7 +9,7 @@ From the active code paths and notebook studies:
 - The physically meaningful setup is now `master_input_mode="force"`, not reference tracking.
 - The native control input is continuous valve voltage `u_v in [-5, 5]`.
 - The current value-based baselines (`Q-learning`, `DQN`) discretize that action into `cfg.V_LEVELS`, which is convenient but not natural for the plant.
-- The notebook work in `20_baselines/`, `30_ablations/`, and `40_generalization/` is centered on `TeleopWithRL.matlab_literal_env`, especially `SimuOriginalReplicaEnv`.
+- The notebook work in `20_baselines/`, `30_ablations/`, and `40_generalization/` is centered on `TeleopWithRL.matlab_env_python_replica`, especially `SimuOriginalReplicaEnv`.
 - Existing DQN ablations suggest that adding direct force cues helps a lot. In the saved `dyn` summaries, `S6_full10_plus_forces` is the strongest non-curriculum baseline among the static comparisons we inspected.
 
 Two quick local rollout checks also matter:
@@ -27,11 +27,11 @@ Interpretation:
 For the first policy-gradient implementation, use the same experiment stack as the notebooks:
 
 - Base environment:
-  `TeleopWithRL.matlab_literal_env.simuoriginal_env.SimuOriginalReplicaEnv`
+  `TeleopWithRL.matlab_env_python_replica.simuoriginal_env.SimuOriginalReplicaEnv`
 - Reward wrapper:
-  `TeleopWithRL.matlab_literal_env.studies.rewarding.ReplicaRewardEnv`
+  `TeleopWithRL.matlab_env_python_replica.studies.rewarding.ReplicaRewardEnv`
 - Observation wrapper:
-  `TeleopWithRL.matlab_literal_env.studies.dqn_state_variants.ReplicaStateVariantEnv`
+  `TeleopWithRL.matlab_env_python_replica.studies.dqn_state_variants.ReplicaStateVariantEnv`
 
 Initial environment configuration:
 
@@ -240,7 +240,7 @@ Recommendation:
 
 Phase 1:
 
-- add a policy-gradient training path under `TeleopWithRL/matlab_literal_env/studies/`
+- add a policy-gradient training path under `TeleopWithRL/matlab_env_python_replica/studies/`
 - reuse `SimuOriginalReplicaEnv`, `ReplicaRewardEnv`, and `ReplicaStateVariantEnv`
 - train with `S6_full10_plus_forces` and `baseline_cfg`
 - save outputs in the same `m/`, `l/`, `p/`, `e/` structure as existing DQN/QL studies

@@ -21,17 +21,17 @@ if __package__ in (None, ""):
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
     from TeleopWithRL import config as cfg
-    from TeleopWithRL.matlab_literal_env.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
-    from TeleopWithRL.matlab_literal_env.scripts._common import replica_env_kwargs_from_args
-    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_DYNAMICS
-    from TeleopWithRL.matlab_literal_env.studies.common import (
+    from TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
+    from TeleopWithRL.matlab_env_python_replica.scripts._common import replica_env_kwargs_from_args
+    from TeleopWithRL.matlab_env_python_replica.simuoriginal_replica import FE_MODE_DYNAMICS
+    from TeleopWithRL.matlab_env_python_replica.studies.common import (
         history_array,
         save_history_npz,
         save_json,
         transparency_ratio_array,
     )
-    from TeleopWithRL.matlab_literal_env.studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
-    from TeleopWithRL.matlab_literal_env.studies.policy_gradient import (
+    from TeleopWithRL.matlab_env_python_replica.studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
+    from TeleopWithRL.matlab_env_python_replica.studies.policy_gradient import (
         PG_ALGO_PPO_CONTINUOUS,
         build_policy_gradient_env_factory,
         evaluate_policy_gradient,
@@ -40,8 +40,8 @@ if __package__ in (None, ""):
         save_policy_gradient_visuals,
         train_policy_gradient_variant,
     )
-    from TeleopWithRL.matlab_literal_env.studies.focused_evaluation import run_focused_evaluation
-    from TeleopWithRL.matlab_literal_env.studies.rewarding import (
+    from TeleopWithRL.matlab_env_python_replica.studies.focused_evaluation import run_focused_evaluation
+    from TeleopWithRL.matlab_env_python_replica.studies.rewarding import (
         DEFAULT_ACTION_DELTA_SCALE_V,
         DEFAULT_ACTION_SCALE_V,
         DEFAULT_TRACKING_SCALE_M,

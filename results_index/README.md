@@ -5,10 +5,10 @@ repo's experiment artifacts.
 
 Raw generated result trees are intentionally kept out of Git:
 
-- `matlab_literal_env/results/`
-- `matlab_literal_env/dqn_experiments/results/`
-- `matlab_literal_env/ql_experiments/results/`
-- `matlab_literal_env/policy_gradient_experiments/results/`
+- `matlab_env_python_replica/results/`
+- `matlab_env_python_replica/dqn_experiments/results/`
+- `matlab_env_python_replica/ql_experiments/results/`
+- `matlab_env_python_replica/policy_gradient_experiments/results/`
 
 Why this folder exists:
 

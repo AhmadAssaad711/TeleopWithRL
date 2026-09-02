@@ -14,26 +14,26 @@ if __package__ in (None, ""):
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
     from TeleopWithRL import config as cfg
-    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
-    from TeleopWithRL.matlab_literal_env.scripts._common import replica_env_kwargs_from_args
-    from TeleopWithRL.matlab_literal_env.studies.common import (
+    from TeleopWithRL.matlab_env_python_replica.simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
+    from TeleopWithRL.matlab_env_python_replica.scripts._common import replica_env_kwargs_from_args
+    from TeleopWithRL.matlab_env_python_replica.studies.common import (
         results_root,
         save_json,
         stage_completed,
         stage_summary_rows_to_csv,
         study_root,
     )
-    from TeleopWithRL.matlab_literal_env.studies.dqn import train_dqn_variant
-    from TeleopWithRL.matlab_literal_env.studies.dqn_state_variants import build_dqn_state_variants, get_dqn_state_variant
-    from TeleopWithRL.matlab_literal_env.studies.qlearning import train_qlearning_variant
-    from TeleopWithRL.matlab_literal_env.studies.ql_state_variants import build_ql_state_variants, get_ql_state_variant
-    from TeleopWithRL.matlab_literal_env.studies.rewarding import (
+    from TeleopWithRL.matlab_env_python_replica.studies.dqn import train_dqn_variant
+    from TeleopWithRL.matlab_env_python_replica.studies.dqn_state_variants import build_dqn_state_variants, get_dqn_state_variant
+    from TeleopWithRL.matlab_env_python_replica.studies.qlearning import train_qlearning_variant
+    from TeleopWithRL.matlab_env_python_replica.studies.ql_state_variants import build_ql_state_variants, get_ql_state_variant
+    from TeleopWithRL.matlab_env_python_replica.studies.rewarding import (
         baseline_reward_variant,
         build_core_reward_variants,
         build_full_reward_variants,
         reward_variant_from_name,
     )
-    from TeleopWithRL.matlab_literal_env.studies.saved_policy_eval import (
+    from TeleopWithRL.matlab_env_python_replica.studies.saved_policy_eval import (
         evaluate_saved_policy,
         save_evaluation_bundle,
     )

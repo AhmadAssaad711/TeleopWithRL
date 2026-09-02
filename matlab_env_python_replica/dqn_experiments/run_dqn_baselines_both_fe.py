@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-from pathlib import Path
 
 from TeleopWithRL import config as cfg
 
@@ -16,7 +15,7 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
     cmd = [
         _python_exe(),
         "-m",
-        "TeleopWithRL.matlab_literal_env.ql_experiments.run_ql_experiments",
+        "TeleopWithRL.matlab_env_python_replica.dqn_experiments.run_dqn_experiments",
         "--study-name",
         study_name,
         "--stage",
@@ -39,14 +38,18 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
         str(args.force_phase),
         "--force-waveform",
         args.force_waveform,
+        "--reward-variant",
+        args.reward_variant,
         "--fe-mode",
         fe_mode,
         "--reset-position-mode",
         str(args.reset_position_mode),
         "--stroke-limit-mode",
         str(args.stroke_limit_mode),
-        "--q-episodes",
-        str(args.q_episodes),
+        "--dqn-episodes",
+        str(args.dqn_episodes),
+        "--dqn-parallel-envs",
+        str(args.dqn_parallel_envs),
         "--test-episodes",
         str(args.test_episodes),
         "--seed",
@@ -56,8 +59,6 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
         "--worker-torch-threads",
         str(args.worker_torch_threads),
     ]
-    if args.action_levels:
-        cmd.extend(["--action-levels", *[str(level) for level in args.action_levels]])
     if args.resume:
         cmd.append("--resume")
     if args.skip_existing:
@@ -71,7 +72,7 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Q-learning baseline on both FE modes in isolated ql_experiments folders."
+        description="Run DQN baseline on both FE modes in isolated dqn_experiments folders."
     )
     parser.add_argument("--study-name", default="baseline_both_fe_01")
     parser.add_argument("--env-mode", choices=["constant_skin", "changing_skin_fat"], default="changing_skin_fat")
@@ -83,10 +84,11 @@ def main() -> None:
     parser.add_argument("--force-freq-rad", type=float, default=0.5)
     parser.add_argument("--force-phase", type=float, default=0.0)
     parser.add_argument("--force-waveform", choices=["sine", "cosine", "square", "multisine"], default="sine")
+    parser.add_argument("--reward-variant", default="baseline_cfg")
     parser.add_argument("--reset-position-mode", choices=["midpoint", "zero"], default="midpoint")
     parser.add_argument("--stroke-limit-mode", choices=["terminate", "clamp"], default="terminate")
-    parser.add_argument("--action-levels", type=float, nargs="+", default=None)
-    parser.add_argument("--q-episodes", type=int, default=2000)
+    parser.add_argument("--dqn-episodes", type=int, default=2500)
+    parser.add_argument("--dqn-parallel-envs", type=int, default=8)
     parser.add_argument("--test-episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--parallel-workers", type=int, default=1)
@@ -98,27 +100,26 @@ def main() -> None:
     parser.add_argument("--run-parallel", action="store_true")
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[3]
     switched_name = f"{args.study_name}_dyn"
     gui_name = f"{args.study_name}_gui"
     dyn_cmd = _module_cmd("switched_dynamics", switched_name, args)
     gui_cmd = _module_cmd("gui_skin_locked", gui_name, args)
 
-    print(f"[ql both-fe] dyn -> {' '.join(dyn_cmd)}", flush=True)
-    print(f"[ql both-fe] gui -> {' '.join(gui_cmd)}", flush=True)
+    print(f"[dqn both-fe] dyn -> {' '.join(dyn_cmd)}", flush=True)
+    print(f"[dqn both-fe] gui -> {' '.join(gui_cmd)}", flush=True)
 
     if args.run_parallel:
         procs = [
-            subprocess.Popen(dyn_cmd, cwd=str(root)),
-            subprocess.Popen(gui_cmd, cwd=str(root)),
+            subprocess.Popen(dyn_cmd),
+            subprocess.Popen(gui_cmd),
         ]
         codes = [proc.wait() for proc in procs]
         if any(code != 0 for code in codes):
             raise SystemExit(max(codes))
         return
 
-    subprocess.run(dyn_cmd, check=True, cwd=str(root))
-    subprocess.run(gui_cmd, check=True, cwd=str(root))
+    subprocess.run(dyn_cmd, check=True)
+    subprocess.run(gui_cmd, check=True)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Policy-Gradient Experiments
 
 This workspace mirrors the DQN notebook workflow for policy-gradient methods on
-`matlab_literal_env`.
+`matlab_env_python_replica`.
 
 Supported algorithms:
 
@@ -13,8 +13,8 @@ Supported algorithms:
 Main entry points:
 
 ```powershell
-python -m TeleopWithRL.matlab_literal_env.policy_gradient_experiments.run_policy_gradient_experiments
-python -m TeleopWithRL.matlab_literal_env.policy_gradient_experiments.run_policy_gradient_baselines_both_fe
+python -m TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.run_policy_gradient_experiments
+python -m TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.run_policy_gradient_baselines_both_fe
 ```
 
 The notebooks under `notebooks/50_policy_gradient/` call the `both_fe` runner

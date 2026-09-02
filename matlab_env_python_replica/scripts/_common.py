@@ -7,7 +7,7 @@ from ... import config as cfg
 from ..simuoriginal_replica import FE_MODE_GUI
 
 
-DEFAULT_RESULTS_ROOT = "matlab_literal_env/results/standard_agents_simuoriginal_env"
+DEFAULT_RESULTS_ROOT = "matlab_env_python_replica/results/standard_agents_simuoriginal_env"
 FE_MODE_DIR_ALIASES = {
     "gui_skin_locked": "gui",
     "switched_dynamics": "dyn",

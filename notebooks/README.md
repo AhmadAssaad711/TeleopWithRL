@@ -29,10 +29,10 @@ Current sections:
 
 The raw experiment outputs still live in:
 
-- `matlab_literal_env/results/`
-- `matlab_literal_env/dqn_experiments/results/`
-- `matlab_literal_env/ql_experiments/results/`
-- `matlab_literal_env/policy_gradient_experiments/results/`
+- `matlab_env_python_replica/results/`
+- `matlab_env_python_replica/dqn_experiments/results/`
+- `matlab_env_python_replica/ql_experiments/results/`
+- `matlab_env_python_replica/policy_gradient_experiments/results/`
 
 The normalization target for those outputs is documented in:
 

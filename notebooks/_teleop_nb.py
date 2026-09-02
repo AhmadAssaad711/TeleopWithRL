@@ -13,7 +13,7 @@ from IPython.display import HTML, Image, Markdown, display
 
 
 def _looks_like_repo_root(path: Path) -> bool:
-    return (path / "matlab_literal_env").exists() and (path / "notebooks" / "_teleop_nb.py").exists()
+    return (path / "matlab_env_python_replica").exists() and (path / "notebooks" / "_teleop_nb.py").exists()
 
 
 def find_repo_root(start: str | Path | None = None) -> Path:
@@ -31,12 +31,12 @@ def repo_paths(start: str | Path | None = None) -> dict[str, Path]:
     repo = find_repo_root(start)
     return {
         "repo": repo,
-        "matlab_literal_env": repo / "matlab_literal_env",
+        "matlab_env_python_replica": repo / "matlab_env_python_replica",
         "notebooks": repo / "notebooks",
         "results_index": repo / "results_index",
-        "matlab_results": repo / "matlab_literal_env" / "results",
-        "dqn_results": repo / "matlab_literal_env" / "dqn_experiments" / "results",
-        "ql_results": repo / "matlab_literal_env" / "ql_experiments" / "results",
+        "matlab_results": repo / "matlab_env_python_replica" / "results",
+        "dqn_results": repo / "matlab_env_python_replica" / "dqn_experiments" / "results",
+        "ql_results": repo / "matlab_env_python_replica" / "ql_experiments" / "results",
     }
 
 

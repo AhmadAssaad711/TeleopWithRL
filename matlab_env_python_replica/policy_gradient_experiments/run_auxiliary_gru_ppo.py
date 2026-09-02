@@ -34,8 +34,8 @@ if __package__ in (None, ""):
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
     from TeleopWithRL import config as cfg
-    from TeleopWithRL.matlab_literal_env.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
-    from TeleopWithRL.matlab_literal_env.policy_gradient_experiments.run_physics_reward_ablation_basic_obs import (
+    from TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
+    from TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.run_physics_reward_ablation_basic_obs import (
         BASIC_OBS_FEATURES,
         build_ablations,
         build_reward_spec,
@@ -43,9 +43,9 @@ if __package__ in (None, ""):
         calibrate_scale_catalog,
         write_csv,
     )
-    from TeleopWithRL.matlab_literal_env.scripts._common import replica_env_kwargs_from_args
-    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_DYNAMICS
-    from TeleopWithRL.matlab_literal_env.studies.common import (
+    from TeleopWithRL.matlab_env_python_replica.scripts._common import replica_env_kwargs_from_args
+    from TeleopWithRL.matlab_env_python_replica.simuoriginal_replica import FE_MODE_DYNAMICS
+    from TeleopWithRL.matlab_env_python_replica.studies.common import (
         RunResult,
         history_array,
         mk_run_dirs,
@@ -56,8 +56,8 @@ if __package__ in (None, ""):
         save_training_plot,
         write_run_summary,
     )
-    from TeleopWithRL.matlab_literal_env.studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
-    from TeleopWithRL.matlab_literal_env.studies.focused_evaluation import (
+    from TeleopWithRL.matlab_env_python_replica.studies.dqn_state_variants import build_custom_dqn_state_variant_from_spec
+    from TeleopWithRL.matlab_env_python_replica.studies.focused_evaluation import (
         build_focused_scenarios,
         compute_non_bode_metrics,
         evaluate_policy_on_scenario,
@@ -65,7 +65,7 @@ if __package__ in (None, ""):
         plot_scenario_result,
         save_scenario_history_npz,
     )
-    from TeleopWithRL.matlab_literal_env.studies.policy_gradient import (
+    from TeleopWithRL.matlab_env_python_replica.studies.policy_gradient import (
         PG_ALGO_PPO_CONTINUOUS,
         PG_TRAIN_RESET_OPTIONS_POOL_KEY,
         build_policy_gradient_env_factory,
@@ -73,7 +73,7 @@ if __package__ in (None, ""):
         load_reset_options_json,
         save_policy_gradient_visuals,
     )
-    from TeleopWithRL.matlab_literal_env.studies.rewarding import reward_variant_from_spec
+    from TeleopWithRL.matlab_env_python_replica.studies.rewarding import reward_variant_from_spec
 else:
     try:
         from ... import config as cfg

@@ -11,11 +11,11 @@ if __package__ in (None, ""):
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
     from TeleopWithRL import config as cfg
-    from TeleopWithRL.matlab_literal_env.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
-    from TeleopWithRL.matlab_literal_env.simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
-    from TeleopWithRL.matlab_literal_env.scripts import run_replica_studies as runner
-    from TeleopWithRL.matlab_literal_env.studies.common import save_json, stage_completed, stage_summary_rows_to_csv
-    from TeleopWithRL.matlab_literal_env.studies.policy_gradient import (
+    from TeleopWithRL.matlab_env_python_replica.policy_gradient_experiments.paths import suite_root as policy_gradient_suite_root
+    from TeleopWithRL.matlab_env_python_replica.simuoriginal_replica import FE_MODE_CHOICES, FE_MODE_GUI
+    from TeleopWithRL.matlab_env_python_replica.scripts import run_replica_studies as runner
+    from TeleopWithRL.matlab_env_python_replica.studies.common import save_json, stage_completed, stage_summary_rows_to_csv
+    from TeleopWithRL.matlab_env_python_replica.studies.policy_gradient import (
         PG_ALGO_CHOICES,
         algo_display_name,
         algo_notebook_tag,
@@ -97,7 +97,7 @@ def _row_from_summary(summary: dict, variant_name: str) -> dict:
 def main() -> None:
     require_sb3()
 
-    parser = argparse.ArgumentParser(description="Run policy-gradient baselines for matlab_literal_env.")
+    parser = argparse.ArgumentParser(description="Run policy-gradient baselines for matlab_env_python_replica.")
     parser.add_argument("--algo", choices=PG_ALGO_CHOICES, required=True)
     parser.add_argument("--study-name", default="pg_run_01")
     parser.add_argument("--env-mode", choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING], default=cfg.ENV_MODE_CHANGING)
