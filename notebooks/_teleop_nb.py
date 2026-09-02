@@ -1,3 +1,11 @@
+"""Small, dependency-light helpers shared by the project notebooks.
+
+Notebook cells should orchestrate experiments and display results. The actual
+environment, training, evaluation, and serialization logic belongs in
+``matlab_env_python_replica``. ``run_notebook_command`` and ``run_module``
+make that boundary explicit while keeping command output visible in Jupyter.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -62,6 +70,49 @@ def project_python_executable(start: str | Path | None = None) -> Path:
         if candidate.exists() and _python_runs(candidate):
             return candidate
     return Path(sys.executable).resolve()
+
+
+def run_notebook_command(
+    command: Iterable[str],
+    cwd: str | Path | None = None,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a repository command from a notebook and return its completed process.
+
+    Parameters
+    ----------
+    command:
+        The executable plus arguments. In experiment notebooks this is usually
+        a command assembled from ``project_python_executable`` and a package
+        script entry point.
+    cwd:
+        Working directory for the command. It defaults to the repository root.
+    kwargs:
+        Optional keyword arguments forwarded to ``subprocess.run``. ``check``
+        defaults to ``True`` so a failed experiment stops the notebook cell.
+    """
+    repo = find_repo_root(cwd)
+    options = dict(kwargs)
+    options.setdefault("check", True)
+    return subprocess.run(list(command), cwd=str(cwd or repo), **options)
+
+
+def run_module(
+    module: str,
+    args: Iterable[str] = (),
+    cwd: str | Path | None = None,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a Python module through the repository's selected interpreter.
+
+    This is the preferred notebook-facing wrapper for commands such as
+    ``TeleopWithRL.matlab_env_python_replica.dqn.scripts.run_experiments``.
+    The module owns experiment behavior; the notebook supplies only arguments
+    and then reads the generated result files.
+    """
+    repo = find_repo_root(cwd)
+    command = [str(project_python_executable(repo)), "-m", str(module), *map(str, args)]
+    return run_notebook_command(command, cwd=repo, **kwargs)
 
 
 def show_markdown(text: str) -> None:

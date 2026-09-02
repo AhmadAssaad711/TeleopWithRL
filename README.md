@@ -20,15 +20,19 @@ notebooks.
 - `matlab_env_python_replica/`
   - Python environment that mirrors the MATLAB/Simulink plant as literally as
     possible.
-  - Contains the SimuOriginal replica, Gym-style environment wrapper, study
-    code, and notebook-called experiment launchers.
+  - Contains the SimuOriginal replica, Gymnasium environment wrapper, shared
+    utilities, algorithm packages, and notebook-called experiment launchers.
 - `results_index/`
   - Organized, notebook-friendly result catalog.
   - Raw generated result folders are kept out of Git; this folder tracks the
     curated index that notebooks can read.
-- Root Python modules
-  - `config.py`, `dqn_agent.py`, and `q_learning_agent.py` are kept because the
-    MATLAB-literal notebook workflow imports them.
+- Replica source packages
+  - `matlab_env_python_replica/environment/` contains the plant and RL wrapper.
+  - `matlab_env_python_replica/config/` contains shared constants.
+  - `matlab_env_python_replica/dqn/`, `ql/`, and `policy_gradient/` contain
+    algorithm-specific agents, training functions, and scripts.
+  - `matlab_env_python_replica/common/` contains shared orchestration,
+    evaluation, reward, and result utilities.
 
 ## Notebook Map
 
@@ -55,7 +59,9 @@ The MATLAB pieces are split deliberately:
 - `matlab_env_python_replica/` is the Python reproduction of the MATLAB dynamics.
 
 The active MATLAB-parity work is centered on `matlab_env/SimuOriginal.slx`.
-The replica constants live in `matlab_env_python_replica/simuoriginal_replica.py`.
+The replica constants live in `matlab_env_python_replica/config/config.py`, and
+the plant implementation lives in
+`matlab_env_python_replica/environment/simuoriginal_replica.py`.
 
 Current parity notes:
 

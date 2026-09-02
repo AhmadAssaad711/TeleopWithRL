@@ -27,11 +27,11 @@ Interpretation:
 For the first policy-gradient implementation, use the same experiment stack as the notebooks:
 
 - Base environment:
-  `TeleopWithRL.matlab_env_python_replica.simuoriginal_env.SimuOriginalReplicaEnv`
+  `TeleopWithRL.matlab_env_python_replica.environment.simuoriginal_env.SimuOriginalReplicaEnv`
 - Reward wrapper:
-  `TeleopWithRL.matlab_env_python_replica.studies.rewarding.ReplicaRewardEnv`
+  `TeleopWithRL.matlab_env_python_replica.common.rewarding.ReplicaRewardEnv`
 - Observation wrapper:
-  `TeleopWithRL.matlab_env_python_replica.studies.dqn_state_variants.ReplicaStateVariantEnv`
+  `TeleopWithRL.matlab_env_python_replica.dqn.state_variants.ReplicaStateVariantEnv`
 
 Initial environment configuration:
 
@@ -240,7 +240,7 @@ Recommendation:
 
 Phase 1:
 
-- add a policy-gradient training path under `TeleopWithRL/matlab_env_python_replica/studies/`
+- add a policy-gradient training path under `TeleopWithRL/matlab_env_python_replica/policy_gradient/`
 - reuse `SimuOriginalReplicaEnv`, `ReplicaRewardEnv`, and `ReplicaStateVariantEnv`
 - train with `S6_full10_plus_forces` and `baseline_cfg`
 - save outputs in the same `m/`, `l/`, `p/`, `e/` structure as existing DQN/QL studies

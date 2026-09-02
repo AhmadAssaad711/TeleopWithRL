@@ -5,6 +5,18 @@ should be read notebook-first: notebooks are the project record, the experiment
 map, and the main review surface. The source-code folders exist to support these
 notebooks.
 
+Notebook execution contract:
+
+- `notebooks/_teleop_nb.py` locates the repository and selects the project
+  Python interpreter.
+- `run_notebook_command(...)` executes a configured repository command and
+  fails the cell if the experiment fails.
+- `run_module(...)` is available when a notebook wants to launch a Python
+  module directly.
+- Training and evaluation logic lives under
+  `matlab_env_python_replica/{dqn,ql,policy_gradient,common}`; notebooks pass
+  settings to those entry points and then read their artifacts.
+
 Current sections:
 
 - `00_repo_map.ipynb`
