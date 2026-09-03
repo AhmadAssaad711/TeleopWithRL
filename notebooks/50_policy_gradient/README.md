@@ -4,6 +4,8 @@ This section contains the PPO, TD3, SAC, and recurrent policy-gradient
 notebooks. The README records only the selected continuous-PPO models from the
 current fair-bias-15 protocol.
 
+Each source notebook has a dedicated results companion: [`51_ppo_continuous_baseline_results.ipynb`](51_ppo_continuous_baseline_results.ipynb), [`52_td3_baseline_results.ipynb`](52_td3_baseline_results.ipynb), [`53_sac_baseline_results.ipynb`](53_sac_baseline_results.ipynb), [`54_ppo_discrete_baseline_results.ipynb`](54_ppo_discrete_baseline_results.ipynb), and [`55_physics_informed_formulations_results_review.ipynb`](55_physics_informed_formulations_results_review.ipynb).
+
 ## Selected models
 
 `F4_accel_state` is the primary tracking candidate. `T3_posvel_current` is

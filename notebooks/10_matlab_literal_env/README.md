@@ -4,6 +4,10 @@
 replica at the plant I/O boundary. It is the place to verify dynamics and
 signal mappings before interpreting RL results.
 
+The exact parity result is recorded in
+[`10_io_parity_results.ipynb`](10_io_parity_results.ipynb), including its
+correlation bar graph.
+
 ## Recorded parity results
 
 Against the MATLAB exported GUI signals, the current Python replica achieved

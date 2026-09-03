@@ -31,3 +31,6 @@ transparency ratio should be near `1.0`.
 The machine-readable audit catalog remains in
 [`../../results_index/runs.csv`](../../results_index/runs.csv); this README
 promotes only the selected models.
+
+The individual experiment result notebooks are listed in
+[`../README.md`](../README.md#individual-result-notebooks).
