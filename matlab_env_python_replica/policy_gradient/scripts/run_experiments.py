@@ -97,8 +97,7 @@ def _row_from_summary(summary: dict, variant_name: str) -> dict:
 
 
 def main() -> None:
-    require_sb3()
-
+    """Parse policy-gradient options and execute one configured experiment."""
     parser = argparse.ArgumentParser(description="Run policy-gradient baselines for matlab_env_python_replica.")
     parser.add_argument("--algo", choices=PG_ALGO_CHOICES, required=True)
     parser.add_argument("--study-name", default="pg_run_01")
@@ -137,6 +136,7 @@ def main() -> None:
     parser.add_argument("--disable-terminate-on-error", action="store_true")
     parser.add_argument("--disable-stroke-limit", action="store_true")
     args = parser.parse_args()
+    require_sb3()
 
     worker_torch_threads = runner._configure_process_env(int(args.worker_torch_threads))
     train_reset_options_pool = _load_reset_options_json(args.train_reset_options_json)

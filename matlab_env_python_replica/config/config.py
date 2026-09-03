@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration for F_h-driven bilateral pneumatic teleoperation with RL control.
 
 Exact dynamics from:

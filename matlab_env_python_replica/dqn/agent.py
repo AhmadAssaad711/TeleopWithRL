@@ -40,6 +40,12 @@ class ReplayBuffer:
         self.size = 0
 
     def push(self, obs, action: int, reward: float, next_obs, done: bool) -> None:
+        """Append one transition, overwriting the oldest entry when full.
+
+        ``obs`` and ``next_obs`` must match the configured observation
+        dimension. ``action`` is an integer action index and ``done`` marks a
+        terminal or truncated transition.
+        """
         idx = self.pos
         self.obs[idx]      = obs
         self.actions[idx]  = action
@@ -50,6 +56,7 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int):
+        """Return a uniformly sampled transition batch as NumPy arrays."""
         indices = self.rng.integers(0, self.size, size=batch_size)
         return (
             self.obs[indices],
@@ -83,6 +90,7 @@ class DQNNetwork(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Map a batch of observations to one Q-value per action."""
         return self.net(x)
 
 
@@ -99,6 +107,7 @@ class DQNAgent:
         epsilon_end: float,
         total_episodes: int,
     ) -> float:
+        """Return multiplicative epsilon decay for the requested episode horizon."""
         horizon = max(1, int(total_episodes))
         start = max(float(epsilon_start), 1e-12)
         end = max(min(float(epsilon_end), start), 1e-12)
@@ -153,6 +162,7 @@ class DQNAgent:
     #  Action selection                                                    #
     # ------------------------------------------------------------------ #
     def select_action(self, obs: np.ndarray) -> int:
+        """Select one action index using the current epsilon-greedy policy."""
         if self.rng.random() < self.epsilon:
             return int(self.rng.integers(self.n_actions))
         with torch.no_grad():
@@ -207,6 +217,7 @@ class DQNAgent:
     # ------------------------------------------------------------------ #
     def store_transition(self, obs, action: int, reward: float,
                          next_obs, done: bool) -> None:
+        """Store one environment transition in the replay buffer."""
         self.replay_buffer.push(obs, action, reward, next_obs, done)
 
     def train_step(self) -> float | None:
@@ -249,6 +260,7 @@ class DQNAgent:
     #  Epsilon decay                                                       #
     # ------------------------------------------------------------------ #
     def decay_epsilon(self) -> None:
+        """Apply one multiplicative exploration-decay update."""
         self.epsilon = max(self.epsilon_end,
                            self.epsilon * self.epsilon_decay)
 
@@ -256,6 +268,7 @@ class DQNAgent:
     #  Persistence                                                         #
     # ------------------------------------------------------------------ #
     def save(self, path: str) -> None:
+        """Serialize model weights, optimizer state, and training counters."""
         torch.save({
             "policy_net": self.policy_net.state_dict(),
             "target_net": self.target_net.state_dict(),
@@ -267,6 +280,7 @@ class DQNAgent:
         }, path)
 
     def load(self, path: str) -> None:
+        """Restore a checkpoint produced by :meth:`save`."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.policy_net.load_state_dict(ckpt["policy_net"])
         self.target_net.load_state_dict(ckpt["target_net"])

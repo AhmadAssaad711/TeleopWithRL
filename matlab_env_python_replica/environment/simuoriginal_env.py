@@ -684,9 +684,11 @@ class SimuOriginalReplicaEnv(gym.Env):
         return float(self.edge_action_min_scale + ((1.0 - self.edge_action_min_scale) * (1.0 - severity)))
 
     def get_equilibrium_position(self) -> float:
+        """Return the position used as the centered-state equilibrium in metres."""
         return self.x_eq
 
     def get_centered_positions(self) -> tuple[float, float]:
+        """Return ``(x_m - x_eq, x_s - x_eq)`` for the current plant state."""
         self._ensure_env_state_vector("invalid_env_state")
         return (
             float(self.state[self.IX_XM] - self.x_eq),
@@ -1075,6 +1077,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         return self._step_with_voltage(u_v)
 
     def render(self):
+        """Return the current history dictionary without opening a renderer."""
         return self._history
 
     def _get_obs(self) -> np.ndarray:
@@ -1204,6 +1207,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
 
     def discretise_obs_reduced(self, obs: np.ndarray) -> tuple[int, ...]:
+        """Map a normalized observation to the legacy reduced Q-learning bins."""
         slave_pos = obs[0] * cfg.OBS_SCALE_POS
         master_pos = obs[1] * cfg.OBS_SCALE_POS
         v_s = obs[2] * cfg.OBS_SCALE_VEL
@@ -1225,6 +1229,7 @@ class SimuOriginalReplicaEnv(gym.Env):
         )
 
     def get_state_dims_reduced(self) -> tuple[int, ...]:
+        """Return the cardinality of each dimension of the reduced state."""
         return (
             len(cfg.REDUCED_TRACKING_ERROR_BINS) + 1,
             len(cfg.REDUCED_VELOCITY_ERROR_BINS) + 1,

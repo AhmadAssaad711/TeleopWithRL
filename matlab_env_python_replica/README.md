@@ -41,6 +41,13 @@ Every Python source file has a module description, and the environment module
 documents its inputs, outputs, observation order, timing, and termination
 behavior in detail.
 
+Detailed contracts are collected in:
+
+- [`API.md`](API.md): environment, plant, agents, training, rewards, and
+  evaluation interfaces.
+- [`CLI.md`](CLI.md): every executable launcher, option groups, and output
+  contract.
+
 ## Notebook-to-code contract
 
 The notebooks are the presentation and analysis layer. A training notebook:
@@ -55,6 +62,14 @@ For example:
 python -m TeleopWithRL.matlab_env_python_replica.dqn.scripts.run_experiments
 python -m TeleopWithRL.matlab_env_python_replica.ql.scripts.run_experiments
 python -m TeleopWithRL.matlab_env_python_replica.policy_gradient.scripts.run_experiments
+```
+
+Those fully qualified commands are the notebook form and should be run from
+the repository's parent directory. From the repository root, use the shorter
+form documented in [`CLI.md`](CLI.md), for example:
+
+```powershell
+python -m matlab_env_python_replica.dqn.scripts.run_experiments --help
 ```
 
 The functions used by those entry points live in `training.py`, `agent.py`,

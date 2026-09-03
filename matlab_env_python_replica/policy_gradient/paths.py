@@ -17,6 +17,7 @@ _PG_LONGEST_SUFFIX = Path("00b") / "ppod" / "m"
 
 
 def results_root() -> Path:
+    """Return the compatibility root for policy-gradient result artifacts."""
     return _REPLICA_ROOT / "policy_gradient_experiments" / "results"
 
 
@@ -36,6 +37,7 @@ def _study_slug(study_name: str) -> str:
 
 
 def suite_root(fe_mode: str, study_name: str) -> Path:
+    """Return the FE-mode/study directory used by policy-gradient launchers."""
     base = results_root() / _fe_dir(fe_mode)
     candidate = base / str(study_name)
     if len(str(candidate / _PG_LONGEST_SUFFIX)) < _WINDOWS_SAFE_DIR_LIMIT:

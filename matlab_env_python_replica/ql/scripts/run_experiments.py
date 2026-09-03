@@ -181,6 +181,7 @@ def _run_saved_policy_eval_ql(suite_root: Path, args, ql_best: dict[str, Any]) -
 
 
 def main() -> None:
+    """Parse Q-learning study options and execute the requested stage."""
     parser = argparse.ArgumentParser(description="Run Q-learning-only experiments for matlab_env_python_replica.")
     parser.add_argument("--study-name", default="run_01")
     parser.add_argument("--stage", choices=["all", "baselines", "ql_state", "ql_reward", "eval"], default="all")

@@ -32,6 +32,13 @@ DEFAULT_HIGH_PASS_TAU_S = 0.5
 
 @dataclass(frozen=True)
 class RewardVariant:
+    """Immutable reward specification shared by all algorithm families.
+
+    Weights multiply normalized tracking, transparency, effort, velocity,
+    force-difference, jerk, and boundary terms. ``formula_terms`` optionally
+    replaces the built-in scalar formula with a JSON-style term list.
+    """
+
     name: str
     tracking_weight: float
     transparency_weight: float
@@ -57,6 +64,7 @@ class RewardVariant:
 
 
 def baseline_reward_variant() -> RewardVariant:
+    """Return the configuration-weighted baseline reward."""
     return RewardVariant(
         name="baseline_cfg",
         tracking_weight=float(cfg.ALPHA_TRACKING),
@@ -69,6 +77,7 @@ def baseline_reward_variant() -> RewardVariant:
 
 
 def equal_gradient_reward_variant() -> RewardVariant:
+    """Return the equal tracking/transparency-gradient reward variant."""
     baseline = baseline_reward_variant()
     return replace(
         baseline,
@@ -78,6 +87,7 @@ def equal_gradient_reward_variant() -> RewardVariant:
 
 
 def tracking_effort_no_force_transparency_reward_variant() -> RewardVariant:
+    """Return tracking-plus-effort reward with transparency disabled."""
     baseline = baseline_reward_variant()
     return replace(
         baseline,
@@ -91,6 +101,7 @@ def tracking_effort_no_force_transparency_reward_variant() -> RewardVariant:
 
 
 def tracking_jerk_no_force_transparency_reward_variant() -> RewardVariant:
+    """Return tracking-plus-jerk reward without force-transparency terms."""
     return RewardVariant(
         name="track_jerk_no_force_trans",
         tracking_weight=float(cfg.ALPHA_TRACKING),
@@ -108,6 +119,7 @@ def tracking_jerk_no_force_transparency_reward_variant() -> RewardVariant:
 
 
 def normalized_force_shape_reward_variant() -> RewardVariant:
+    """Return the normalized tracking/velocity/force-shape reward."""
     return RewardVariant(
         name="norm_force_shape_v1",
         tracking_weight=1.0,
@@ -128,6 +140,7 @@ def normalized_force_shape_reward_variant() -> RewardVariant:
 
 
 def normalized_legacy_transparency_reward_variant() -> RewardVariant:
+    """Return the normalized legacy transparency reward variant."""
     return RewardVariant(
         name="norm_legacy_trans_v1",
         tracking_weight=1.0,
@@ -148,6 +161,7 @@ def normalized_legacy_transparency_reward_variant() -> RewardVariant:
 
 
 def build_full_reward_variants() -> list[RewardVariant]:
+    """Return the complete built-in reward-variant sweep."""
     return [
         equal_gradient_reward_variant(),
         tracking_effort_no_force_transparency_reward_variant(),
@@ -169,6 +183,7 @@ def build_full_reward_variants() -> list[RewardVariant]:
 
 
 def build_core_reward_variants() -> list[RewardVariant]:
+    """Return the smaller reward set used by the core comparison studies."""
     wanted = {
         "eqgrad_t40_tr40_nojerk",
         "track_effort_no_force_trans",
@@ -350,6 +365,7 @@ def reward_variant_from_spec(spec: Mapping[str, Any]) -> RewardVariant:
 
 
 def load_reward_variant_from_json(path: str | Path) -> RewardVariant:
+    """Load one reward specification from a JSON object on disk."""
     with open(Path(path), "r", encoding="utf-8") as fh:
         spec = json.load(fh)
     if not isinstance(spec, Mapping):
@@ -358,6 +374,7 @@ def load_reward_variant_from_json(path: str | Path) -> RewardVariant:
 
 
 def reward_variant_from_name(name: str) -> RewardVariant:
+    """Resolve a built-in reward name or an existing JSON specification path."""
     candidate = Path(str(name))
     if candidate.suffix.lower() == ".json" and candidate.exists():
         return load_reward_variant_from_json(candidate)
@@ -505,6 +522,7 @@ def reward_formula_from_context(
     context: Mapping[str, float],
     variant: RewardVariant,
 ) -> tuple[float, dict[str, float], dict[str, float]]:
+    """Evaluate a custom formula and return total, grouped, and term rewards."""
     formula_terms = tuple(
         _normalize_formula_term(term, index)
         for index, term in enumerate(variant.formula_terms, start=1)
@@ -558,6 +576,12 @@ def compute_reward_terms(
     action_delta: float,
     variant: RewardVariant,
 ) -> tuple[float, float, float, float, float, float, float]:
+    """Compute total reward and seven decomposed scalar contributions.
+
+    The return order is ``reward, tracking, transparency, effort, jerk,
+    velocity, force_difference``. Inputs are one-transition error/control
+    quantities; scales and weights come from ``variant``.
+    """
     if variant.formula_terms:
         transparency_ratio = float("nan")
         if abs(transparency_error) < 1e-12:
@@ -622,7 +646,12 @@ def _edge_severity(position: float, stroke_max: float, buffer_m: float) -> float
 
 
 class ReplicaRewardEnv:
-    """Reward wrapper for the SimuOriginal replica env."""
+    """Reward wrapper preserving the base environment's reset/step contract.
+
+    The wrapper computes per-transition reward terms from the base history and
+    records them in ``render()``. Unknown attributes are forwarded to
+    ``base_env`` so runners and state encoders retain the original metadata.
+    """
 
     def __init__(self, base_env: Any, variant: RewardVariant):
         self.base_env = base_env
@@ -652,6 +681,7 @@ class ReplicaRewardEnv:
         return list(self._custom_reward_keys)
 
     def reset(self, *args, **kwargs):
+        """Reset the base environment and clear reward-term history."""
         obs, info = self.base_env.reset(*args, **kwargs)
         self._prev_u_v = 0.0
         self._prev_action_delta = 0.0
@@ -970,6 +1000,7 @@ class ReplicaRewardEnv:
             self._reward_history[key].append(float(custom_terms.get(name, 0.0)))
 
     def step(self, action):
+        """Step the base environment and return the variant-computed reward."""
         obs, _, terminated, truncated, info = self.base_env.step(action)
         (
             reward,
@@ -1002,6 +1033,7 @@ class ReplicaRewardEnv:
         return obs, reward, terminated, truncated, info
 
     def step_voltage(self, u_v: float):
+        """Apply a scalar voltage through the base environment's direct API."""
         obs, _, terminated, truncated, info = self.base_env.step_voltage(u_v)
         (
             reward,
@@ -1034,6 +1066,7 @@ class ReplicaRewardEnv:
         return obs, reward, terminated, truncated, info
 
     def render(self):
+        """Return base history merged with decomposed reward histories."""
         base_history = self.base_env.render() or {}
         merged: dict[str, Any] = {}
         for key, value in base_history.items():

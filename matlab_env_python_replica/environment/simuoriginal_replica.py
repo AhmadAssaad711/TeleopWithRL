@@ -35,6 +35,13 @@ FE_MODE_CHOICES = (FE_MODE_GUI, FE_MODE_DYNAMICS)
 
 @dataclass(frozen=True)
 class ParmsOriginal:
+    """Physical and numerical constants used by the SimuOriginal plant.
+
+    Values are SI quantities and mirror the saved MATLAB/Simulink parameter
+    set. The dataclass is immutable so a run cannot silently change the plant
+    constants after construction.
+    """
+
     # Hand
     m_h: float = 0.0 * 11.6
     B_h: float = 0.0 * 17.26
@@ -72,23 +79,29 @@ class ParmsOriginal:
 
     @property
     def A_t(self) -> float:
+        """Return tube cross-sectional area in square metres."""
         return math.pi * self.D_t**2 / 4.0
 
     @property
     def P_md(self) -> float:
+        """Return the dead-volume reference pressure in pascals."""
         return self.R * self.T * self.rho0
 
     @property
     def tube_damping(self) -> float:
+        """Return the pneumatic tube damping coefficient."""
         return 32.0 * self.mui / (self.rho0 * self.D_t**2)
 
     @property
     def tube_compliance(self) -> float:
+        """Return tube compliance as area times tube length."""
         return self.A_t * self.L_t
 
 
 @dataclass(frozen=True)
 class SimuOriginalProfile:
+    """Saved SimuOriginal input, solver, valve, and environment settings."""
+
     stop_time: float = 180.0
     solver_name: str = "ode4"
     fixed_step: float = 0.001
@@ -118,6 +131,12 @@ class SimuOriginalProfile:
 
 @dataclass(frozen=True)
 class SimuOriginalState:
+    """Twelve-state plant vector in saved SimuOriginal order.
+
+    The order is ``Pm1, Pm2, xm_dot, xm, Ps1, Ps2, xs_dot, xs,
+    mL1_dot, mL2_dot, x_v, x_v_dot``.
+    """
+
     Pm1: float
     Pm2: float
     xm_dot: float
@@ -132,6 +151,7 @@ class SimuOriginalState:
     x_v_dot: float
 
     def as_array(self) -> ArrayLike:
+        """Return the state as a new one-dimensional floating-point array."""
         return np.array(
             [
                 self.Pm1,
@@ -152,11 +172,21 @@ class SimuOriginalState:
 
     @classmethod
     def from_array(cls, values: ArrayLike) -> "SimuOriginalState":
+        """Build a state from an array-like value with twelve entries."""
         return cls(*[float(v) for v in values])
 
 
 @dataclass(frozen=True)
 class SimuOriginalResult:
+    """Time-aligned simulation signals returned by the plant integrator.
+
+    Array fields have length ``valid_steps``. ``state`` has shape
+    ``(valid_steps, 12)``; all other signal arrays are one-dimensional. If the
+    integration encounters a non-finite state or invalid pneumatic volume,
+    ``singularity_time`` records the first invalid time and the arrays are
+    truncated before that sample.
+    """
+
     time: ArrayLike
     state: ArrayLike
     F_h: ArrayLike
@@ -189,6 +219,16 @@ def build_saved_simuoriginal_state(
     *,
     init_position_mode: str = "midpoint",
 ) -> SimuOriginalState:
+    """Return the saved equilibrium state using midpoint or legacy-zero positions.
+
+    Parameters
+    ----------
+    parms:
+        Physical constants that define the equilibrium pressure and midpoint.
+    init_position_mode:
+        ``"midpoint"`` initializes both pistons at half stroke; ``"zero"``,
+        ``"origin"``, and ``"legacy"`` reproduce the historical origin state.
+    """
     parms = parms or ParmsOriginal()
     midpoint = 0.5 * float(parms.l_cyl)
     mode = str(init_position_mode).strip().lower()
@@ -217,6 +257,7 @@ def build_saved_simuoriginal_state(
 
 
 def saved_force_input(t: float, profile: Optional[SimuOriginalProfile] = None) -> float:
+    """Evaluate the saved sinusoidal human-force input at time ``t``."""
     profile = profile or SimuOriginalProfile()
     if profile.force_source != "sine":
         raise ValueError(f"Unsupported saved force source: {profile.force_source}")
@@ -226,6 +267,7 @@ def saved_force_input(t: float, profile: Optional[SimuOriginalProfile] = None) -
 
 
 def saved_control_input(_t: float, profile: Optional[SimuOriginalProfile] = None) -> float:
+    """Evaluate the saved valve-control input, currently constant zero."""
     profile = profile or SimuOriginalProfile()
     if profile.control_source != "constant_zero":
         raise ValueError(f"Unsupported saved control source: {profile.control_source}")
@@ -373,6 +415,13 @@ def simuoriginal_derivatives(
     F_h_fn: Optional[Callable[[float], float]] = None,
     u_fn: Optional[Callable[[float], float]] = None,
 ) -> ArrayLike:
+    """Return ``dy/dt`` for the twelve-state nonlinear plant.
+
+    ``y`` must follow :class:`SimuOriginalState` order. Optional input
+    callables receive time in seconds and return force in newtons or control in
+    volts. The returned array has the same twelve-state order and is suitable
+    for a fixed-step integrator.
+    """
     parms = parms or ParmsOriginal()
     profile = profile or SimuOriginalProfile()
     F_h_fn = F_h_fn or (lambda tau: saved_force_input(tau, profile))

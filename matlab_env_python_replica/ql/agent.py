@@ -135,6 +135,7 @@ class QLearningAgent:
     #  Persistence                                                        #
     # ------------------------------------------------------------------ #
     def save(self, path: str = "q_table.npy") -> None:
+        """Save the sparse Q-table and visit counters to a NumPy file."""
         payload = {
             "format": "sparse_q_v1",
             "state_dims": self.state_dims,
@@ -219,6 +220,7 @@ class QLearningAgent:
         self._visited_state_actions = 0
 
     def load(self, path: str = "q_table.npy") -> None:
+        """Load a sparse or compatible dense Q-table checkpoint from ``path``."""
         raw = np.load(path, allow_pickle=True)
 
         if isinstance(raw, np.ndarray) and raw.dtype == object and raw.shape == ():
@@ -237,6 +239,7 @@ class QLearningAgent:
     #  Diagnostics                                                        #
     # ------------------------------------------------------------------ #
     def discovered_states(self) -> int:
+        """Return the number of state rows reached during training/loading."""
         return int(self._visited_states)
 
     def coverage(self) -> float:

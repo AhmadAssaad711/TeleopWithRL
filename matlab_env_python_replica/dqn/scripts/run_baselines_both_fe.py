@@ -11,8 +11,15 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from pathlib import Path
 
-from TeleopWithRL.matlab_env_python_replica.config import config as cfg
+if __package__ in (None, ""):
+    _PROJECT_ROOT = Path(__file__).resolve().parents[4]
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from TeleopWithRL.matlab_env_python_replica.config import config as cfg
+else:
+    from ...config import config as cfg
 
 
 def _python_exe() -> str:
@@ -79,6 +86,7 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
 
 
 def main() -> None:
+    """Run the configured DQN baseline once for each FE mode."""
     parser = argparse.ArgumentParser(
         description="Run the DQN baseline on both FE modes and write isolated result folders."
     )

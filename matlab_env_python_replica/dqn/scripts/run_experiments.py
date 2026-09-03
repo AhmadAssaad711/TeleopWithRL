@@ -183,6 +183,7 @@ def _run_saved_policy_eval_dqn(suite_root: Path, args, dqn_best: dict[str, Any])
 
 
 def main() -> None:
+    """Parse DQN study options and execute the requested stage."""
     parser = argparse.ArgumentParser(description="Run DQN-only experiments for matlab_env_python_replica.")
     parser.add_argument("--study-name", default="run_01")
     parser.add_argument("--stage", choices=["all", "baselines", "dqn_reward", "dqn_state", "eval"], default="all")

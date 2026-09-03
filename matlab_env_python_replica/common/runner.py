@@ -658,6 +658,7 @@ def _run_saved_policy_evals(suite_root: Path, args, ql_best: dict[str, Any], dqn
 
 
 def main() -> None:
+    """Parse the combined-study CLI, run the selected stages, and exit on error."""
     parser = argparse.ArgumentParser(description="Run replica-only RL baselines, ablations, and saved-policy evals in series.")
     parser.add_argument("--study-name", default="replica_rl")
     parser.add_argument("--stage", choices=["all", "baselines", "ql_state", "ql_reward", "dqn_reward", "dqn_state", "eval"], default="all")

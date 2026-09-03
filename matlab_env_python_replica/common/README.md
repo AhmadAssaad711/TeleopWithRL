@@ -12,3 +12,6 @@ This package holds code shared by more than one algorithm or by the notebooks:
 Notebook cells should call these functions through the algorithm entry points or
 import them for analysis. Algorithm-specific learning code belongs in `dqn/`,
 `ql/`, or `policy_gradient/`.
+
+See [`../API.md`](../API.md) for function input/output contracts and
+[`../CLI.md`](../CLI.md) for launcher options and generated-artifact rules.

@@ -4,6 +4,11 @@ These entry points launch policy-gradient training, formulation studies, and
 focused evaluation. Reusable PPO/TD3/SAC logic remains in
 `policy_gradient.training`; cross-algorithm evaluation remains in `common/`.
 
+See [`../../CLI.md`](../../CLI.md) for the complete option and working-directory
+contract. From the repository root, use the `matlab_env_python_replica...`
+module prefix; notebooks use the fully qualified prefix from the repository's
+parent directory.
+
 Main entry points include:
 
 ```powershell

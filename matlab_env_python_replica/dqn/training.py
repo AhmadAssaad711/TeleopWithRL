@@ -80,6 +80,13 @@ def build_dqn_env_factory(
     reward_variant: RewardVariant,
     state_variant: DQNStateVariant,
 ):
+    """Return a zero-argument factory for wrapped DQN environments.
+
+    Each call creates a fresh ``SimuOriginalReplicaEnv``, applies the selected
+    reward variant, and transforms observations with ``state_variant``. The
+    factory is intentionally serializable enough for the optional subprocess
+    evaluation path; callers should pass plain dictionaries in ``env_kwargs``.
+    """
     def _factory():
         base_env = SimuOriginalReplicaEnv(
             env_mode=env_mode,
@@ -238,6 +245,13 @@ def evaluate_dqn(
     seed_offset: int,
     parallel_envs: int = 1,
 ) -> tuple[dict[str, float], dict[str, Any]]:
+    """Evaluate a DQN greedily and return aggregate metrics plus history.
+
+    Exploration is temporarily disabled and restored before returning. When
+    ``parallel_envs`` is greater than one, evaluation uses subprocess workers;
+    otherwise it runs sequentially. ``env_factory`` must return the same
+    wrapped environment type used during training.
+    """
     if int(parallel_envs) <= 1 or int(n_episodes) <= 1:
         episode_metrics: list[dict[str, float]] = []
         episode_histories: list[dict[str, Any]] = []
@@ -381,6 +395,14 @@ def train_dqn_variant(
     epsilon_after_load: float | None = None,
     decay_epsilon_on_learning_only: bool = False,
 ) -> RunResult:
+    """Train one DQN state/reward variant and write a complete run bundle.
+
+    ``out_dir`` receives model/checkpoint files, histories, metric summaries,
+    diagnostic plots, and TensorBoard logs. Optional reset pools/schedules
+    define training curricula; ``init_model_path`` supports compatible
+    continuation runs. The returned ``RunResult`` contains the aggregate
+    training and evaluation metrics used by the study manifests.
+    """
     writer_cls = require_tensorboard()
     dirs = mk_run_dirs(out_dir)
     writer = writer_cls(log_dir=dirs["tensorboard"])

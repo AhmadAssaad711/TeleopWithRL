@@ -114,6 +114,7 @@ def _module_cmd(fe_mode: str, study_name: str, args) -> list[str]:
 
 
 def main() -> None:
+    """Run the selected policy-gradient baseline once for each FE mode."""
     parser = argparse.ArgumentParser(
         description="Run policy-gradient baselines on both FE modes."
     )

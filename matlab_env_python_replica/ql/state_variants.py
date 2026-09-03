@@ -170,6 +170,8 @@ def _relative_positions_velocities_reduced4(obs: np.ndarray, info: dict[str, Any
 
 @dataclass(frozen=True)
 class QLStateVariant:
+    """Named tabular encoder mapping observations to integer state tuples."""
+
     name: str
     feature_names: tuple[str, ...]
     description: str
@@ -178,6 +180,7 @@ class QLStateVariant:
 
 
 def build_ql_state_variants() -> list[QLStateVariant]:
+    """Return all built-in Q-learning state encoders and their bin dimensions."""
     reduced_track = len(cfg.REDUCED_TRACKING_ERROR_BINS) + 1
     reduced_vel = len(cfg.REDUCED_VELOCITY_ERROR_BINS) + 1
     reduced_slave_p = len(cfg.REDUCED_SLAVE_PRESSURE_DIFF_BINS) + 1
@@ -254,6 +257,7 @@ _VARIANTS = {variant.name: variant for variant in build_ql_state_variants()}
 
 
 def get_ql_state_variant(name: str) -> QLStateVariant:
+    """Return a named Q-learning state variant or raise ``KeyError``."""
     if name not in _VARIANTS:
         raise KeyError(f"Unknown Q-learning state variant: {name}")
     return _VARIANTS[name]

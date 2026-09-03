@@ -59,6 +59,8 @@ def _arr(values: list[float] | np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class StateFeatureSpec:
+    """Description and extractor for one custom continuous-state feature."""
+
     name: str
     description: str
     scale_note: str
@@ -67,6 +69,8 @@ class StateFeatureSpec:
 
 @dataclass(frozen=True)
 class DQNStateVariant:
+    """Named continuous observation encoder shared by DQN and SB3 policies."""
+
     name: str
     feature_names: tuple[str, ...]
     description: str
@@ -75,6 +79,7 @@ class DQNStateVariant:
 
     @property
     def obs_dim(self) -> int:
+        """Return the number of features emitted by ``extractor``."""
         return len(self.feature_names)
 
 
@@ -481,6 +486,7 @@ _CUSTOM_STATE_FEATURES: dict[str, StateFeatureSpec] = {
 
 
 def available_custom_state_feature_rows() -> list[dict[str, str]]:
+    """Return notebook-friendly descriptions of selectable custom features."""
     return [
         {
             "feature": spec.name,
@@ -492,6 +498,7 @@ def available_custom_state_feature_rows() -> list[dict[str, str]]:
 
 
 def available_custom_state_features() -> tuple[str, ...]:
+    """Return the stable names accepted by custom-state specifications."""
     return tuple(_CUSTOM_STATE_FEATURES.keys())
 
 
@@ -502,6 +509,13 @@ def build_custom_dqn_state_variant(
     description: str = "Notebook-defined custom state.",
     metadata: dict[str, Any] | None = None,
 ) -> DQNStateVariant:
+    """Build a continuous state encoder from named feature extractors.
+
+    Unknown features raise ``KeyError`` and an empty selection raises
+    ``ValueError``. The returned extractor accepts the environment's
+    normalized observation and its ``info`` dictionary and emits ``float32``
+    features in the requested order.
+    """
     selected = tuple(str(feature).strip() for feature in feature_names if str(feature).strip())
     if not selected:
         raise ValueError("A custom state variant needs at least one selected feature.")
@@ -579,6 +593,7 @@ def _features_from_spec(spec: Mapping[str, Any]) -> list[str]:
 
 
 def build_custom_dqn_state_variant_from_spec(spec: Mapping[str, Any]) -> DQNStateVariant:
+    """Build a custom or temporally stacked state from a JSON-style mapping."""
     selected = _features_from_spec(spec)
     name = str(spec.get("name") or "custom_state")
     description = str(spec.get("description") or "Notebook-defined custom state.")
@@ -632,6 +647,7 @@ def build_custom_dqn_state_variant_from_spec(spec: Mapping[str, Any]) -> DQNStat
 
 
 def load_custom_dqn_state_variant(path: str | Path) -> DQNStateVariant:
+    """Load a custom DQN state specification from a JSON file."""
     with open(Path(path), "r", encoding="utf-8") as fh:
         spec = json.load(fh)
     if not isinstance(spec, Mapping):
@@ -640,6 +656,7 @@ def load_custom_dqn_state_variant(path: str | Path) -> DQNStateVariant:
 
 
 def build_dqn_state_variants() -> list[DQNStateVariant]:
+    """Return the built-in continuous state-variant definitions."""
     return [
         DQNStateVariant(
             name="S0_baseline_full10",
@@ -787,6 +804,7 @@ _VARIANTS = {variant.name: variant for variant in build_dqn_state_variants()}
 
 
 def get_dqn_state_variant(name: str) -> DQNStateVariant:
+    """Resolve a built-in name or an existing JSON state specification."""
     candidate = Path(str(name))
     if candidate.suffix.lower() == ".json" and candidate.exists():
         return load_custom_dqn_state_variant(candidate)
@@ -814,18 +832,22 @@ class ReplicaStateVariantEnv:
         return self.state_variant.extractor(np.asarray(obs, dtype=np.float32), info or {})
 
     def reset(self, *args, **kwargs):
+        """Reset the wrapped environment and transform its initial observation."""
         obs, info = self.base_env.reset(*args, **kwargs)
         return self._transform(obs, info), info
 
     def step(self, action):
+        """Step the wrapped environment and return the selected state representation."""
         obs, reward, terminated, truncated, info = self.base_env.step(action)
         return self._transform(obs, info), reward, terminated, truncated, info
 
     def step_voltage(self, u_v: float):
+        """Apply a direct voltage command and transform the returned observation."""
         obs, reward, terminated, truncated, info = self.base_env.step_voltage(u_v)
         return self._transform(obs, info), reward, terminated, truncated, info
 
     def render(self):
+        """Return the base history with the active state-variant metadata attached."""
         history = self.base_env.render() or {}
         merged = dict(history)
         merged["state_variant_name"] = self.state_variant.name

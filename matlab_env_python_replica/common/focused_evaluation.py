@@ -48,6 +48,8 @@ _REPLICA_XS = 7
 
 @dataclass(frozen=True)
 class EvaluationScenario:
+    """Serializable force/environment scenario for one evaluation rollout."""
+
     name: str
     group: str
     force_waveform: str
@@ -71,6 +73,7 @@ class EvaluationScenario:
     notes: str = ""
 
     def reset_options(self) -> dict[str, Any]:
+        """Return this scenario in the format accepted by ``env.reset``."""
         options: dict[str, Any] = {
             "name": self.name,
             "force_waveform": self.force_waveform,
@@ -103,11 +106,13 @@ class EvaluationScenario:
 
 
 def safe_stem(text: str) -> str:
+    """Convert a scenario label into a filesystem-safe filename stem."""
     stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(text))
     return stem.strip("._-") or "scenario"
 
 
 def load_summary(summary_or_model_path: str | Path) -> dict[str, Any]:
+    """Load the nearest policy summary from a model or run directory."""
     path = Path(summary_or_model_path)
     if path.is_dir():
         summary_path = path / "l" / "summary.json"
@@ -122,6 +127,7 @@ def load_summary(summary_or_model_path: str | Path) -> dict[str, Any]:
 
 
 def resolve_model_path(path: str | Path, summary: dict[str, Any] | None = None) -> Path:
+    """Resolve a saved PPO/TD3/SAC model path from a file or run directory."""
     path = Path(path)
     if path.is_file():
         return path
@@ -182,6 +188,7 @@ def _reward_variant_from_summary(summary: dict[str, Any]):
 
 
 def build_eval_context(summary: dict[str, Any]):
+    """Build an environment factory and variants from a saved run summary."""
     env_kwargs = {
         "episode_duration": float(summary["episode_duration"]),
         "env_switch_time": float(summary["env_switch_time"]),
@@ -206,6 +213,7 @@ def build_eval_context(summary: dict[str, Any]):
 
 
 def load_policy_gradient_model(model_path: str | Path, summary: dict[str, Any]):
+    """Load the SB3 policy named by a summary, including custom spaces."""
     require_sb3()
     from stable_baselines3 import PPO, SAC, TD3
 
@@ -348,6 +356,7 @@ def _tuple_or_none(values: Any) -> tuple[float, ...] | None:
 
 
 def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]:
+    """Return the paper-matched tracking/contact scenario battery."""
     base = _nominal_values(summary)
     k0 = float(base["post_switch_Ke"])
     b0 = float(base["post_switch_Be"])
@@ -522,6 +531,7 @@ def build_focused_scenarios(summary: dict[str, Any]) -> list[EvaluationScenario]
 
 
 def build_bode_scenarios(summary: dict[str, Any], frequencies_rad_s: list[float] | None = None) -> list[EvaluationScenario]:
+    """Return sinusoidal scenarios for empirical frequency-response analysis."""
     base = _nominal_values(summary)
     base = {
         **base,
@@ -555,6 +565,7 @@ def evaluate_policy_on_scenario(
     seed: int,
     deterministic: bool = True,
 ) -> dict[str, Any]:
+    """Run one policy rollout and return its history plus termination metadata."""
     env = env_factory()
     obs, info = env.reset(seed=int(seed), options=scenario.reset_options())
     if hasattr(policy, "reset_recurrent_state"):
@@ -598,6 +609,7 @@ def _integral(t: np.ndarray, values: np.ndarray) -> float:
 
 
 def settling_time(t: np.ndarray, error: np.ndarray, *, start_time: float, threshold: float, window_s: float) -> float:
+    """Return the first sustained-in-tolerance time after ``start_time``."""
     if t.size == 0 or error.size == 0:
         return float("nan")
     n = min(t.size, error.size)
@@ -621,6 +633,7 @@ def settling_time(t: np.ndarray, error: np.ndarray, *, start_time: float, thresh
 
 
 def compute_non_bode_metrics(result: dict[str, Any], *, action_limit: float = 5.0) -> dict[str, Any]:
+    """Compute tracking, transparency, control, and termination metrics."""
     scenario: EvaluationScenario = result["scenario"]
     history = result["history"]
     final_info = result["final_info"]
@@ -714,6 +727,7 @@ def _wrap_phase(angle: float) -> float:
 
 
 def compute_bode_metrics(result: dict[str, Any]) -> dict[str, Any]:
+    """Estimate gain and phase metrics from one sinusoidal rollout."""
     scenario: EvaluationScenario = result["scenario"]
     history = result["history"]
     t = history_array(history, "time", dtype=np.float64)
@@ -747,6 +761,7 @@ def compute_bode_metrics(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def plot_scenario_result(result: dict[str, Any], out_dir: str | Path) -> None:
+    """Write the compact tracking/force/control plot for one scenario."""
     scenario: EvaluationScenario = result["scenario"]
     history = result["history"]
     out_dir = Path(out_dir)
@@ -867,6 +882,7 @@ def _plot_control_result(result: dict[str, Any], out_dir: str | Path) -> None:
 
 
 def plot_scenario_detail_results(result: dict[str, Any], out_dir: str | Path) -> None:
+    """Write detailed tracking, force, control, and transparency plots."""
     _plot_tracking_result(result, out_dir)
     _plot_force_result(result, out_dir)
     _plot_control_result(result, out_dir)
@@ -894,6 +910,7 @@ def save_scenario_history_npz(
     out_dir: str | Path,
     metrics: dict[str, Any] | None = None,
 ) -> Path:
+    """Serialize one scenario history and metrics to an NPZ file."""
     scenario: EvaluationScenario = result["scenario"]
     history = result["history"]
     out_dir = Path(out_dir)
@@ -912,6 +929,7 @@ def save_scenario_history_npz(
 
 
 def plot_bode(bode_rows: list[dict[str, Any]], out_path: str | Path) -> None:
+    """Write the empirical gain/phase response plot for Bode rows."""
     if not bode_rows:
         return
     rows = sorted(bode_rows, key=lambda row: float(row["frequency_rad_s"]))
@@ -931,6 +949,7 @@ def plot_bode(bode_rows: list[dict[str, Any]], out_path: str | Path) -> None:
 
 
 def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    """Write a list of dictionaries as a headered CSV file."""
     if not rows:
         return
     path = Path(path)
@@ -987,6 +1006,12 @@ def run_focused_evaluation(
     include_bode: bool = True,
     save_plots: bool = True,
 ) -> dict[str, Any]:
+    """Run the focused battery and write metrics, histories, and plots.
+
+    The returned dictionary contains ``summary``, ``metrics``, and ``bode``
+    collections. ``out_dir`` receives portable CSV/JSON artifacts plus
+    optional scenario histories and diagnostics.
+    """
     summary = load_summary(model_path)
     model_path = resolve_model_path(model_path, summary)
     policy = load_policy_gradient_model(model_path, summary)

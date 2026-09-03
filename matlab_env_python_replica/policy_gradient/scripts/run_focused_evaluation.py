@@ -16,6 +16,7 @@ else:
 
 
 def main() -> None:
+    """Run the shared focused evaluation battery for one saved policy."""
     parser = argparse.ArgumentParser(
         description="Run the focused unified evaluation battery for a continuous policy-gradient model."
     )

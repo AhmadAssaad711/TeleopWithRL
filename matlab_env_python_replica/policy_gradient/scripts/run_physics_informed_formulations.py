@@ -78,6 +78,8 @@ else:
 
 @dataclass(frozen=True)
 class Formulation:
+    """Definition of one physics-informed observation/reward formulation."""
+
     key: str
     label: str
     state_features: tuple[str, ...]
@@ -228,6 +230,7 @@ SUMMARY_FIELDS = (
 
 
 def build_reward_spec(formulation: Formulation) -> dict[str, Any]:
+    """Build the JSON-serializable reward specification for a formulation."""
     terms = [dict(term) for term in BASE_REWARD_TERMS]
     terms.extend(dict(term) for term in formulation.extra_terms)
     return {
@@ -261,6 +264,7 @@ def build_reward_spec(formulation: Formulation) -> dict[str, Any]:
 
 
 def build_state_spec(formulation: Formulation) -> dict[str, Any]:
+    """Build the JSON-serializable state specification for a formulation."""
     return {
         "name": f"{formulation.key}_state",
         "description": formulation.note,
@@ -269,6 +273,7 @@ def build_state_spec(formulation: Formulation) -> dict[str, Any]:
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write the fixed-column formulation comparison table to CSV."""
     path = Path(path)
     os.makedirs(_long_path(path.parent), exist_ok=True)
     with open(_long_path(path), "w", encoding="utf-8", newline="") as handle:
@@ -279,6 +284,7 @@ def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
+    """Load one JSON object used by the formulation study."""
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -307,6 +313,7 @@ def _use_symlog_if_needed(ax, values: list[float] | np.ndarray, *, linthresh: fl
 
 
 def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write summary bars, learning curves, and ratio rollout plots."""
     if not rows:
         return
     labels = [str(row["key"]).replace("_", "\n") for row in rows]
@@ -365,6 +372,7 @@ def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def plot_transparency_ratio_rollouts(root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write the actual force/velocity transparency ratio for each formulation."""
     fig, ax = plt.subplots(figsize=(14, 7), constrained_layout=True)
     plotted = False
     all_values: list[float] = []
@@ -402,6 +410,7 @@ def plot_transparency_ratio_rollouts(root: Path, rows: list[dict[str, Any]]) -> 
 
 
 def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_root: Path) -> None:
+    """Write a human-readable formulation summary with units and metrics."""
     lines = [
         "# Physics-Informed Formulation Study",
         "",
@@ -445,6 +454,7 @@ def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def aggregate_focused_metrics(path: Path) -> dict[str, float]:
+    """Aggregate focused-evaluation scenario rows into one formulation row."""
     try:
         with open(_long_path(path), "r", encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
@@ -477,6 +487,7 @@ def collect_available_rows(
     formulations: list[Formulation] | tuple[Formulation, ...],
     current_rows: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Load completed formulation summaries, optionally reusing current rows."""
     current_rows = dict(current_rows or {})
     rows: list[dict[str, Any]] = []
     for formulation in formulations:
@@ -517,6 +528,7 @@ def row_from_summary(
     summary: dict[str, Any],
     focused: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    """Normalize one saved formulation summary into the study-table schema."""
     eval_metrics = dict(summary.get("eval_metrics") or {})
     row = {
         "key": formulation.key,
@@ -685,6 +697,7 @@ def _update_summary_with_eval(summary: dict[str, Any], eval_metrics: dict[str, f
 
 
 def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Re-evaluate existing formulation models and refresh study artifacts."""
     root = policy_gradient_suite_root(args.fe_mode, args.study_name)
     specs_root = root / "specs"
     selected_formulations = [
@@ -765,6 +778,7 @@ def reevaluate_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def run(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run training or re-evaluation according to parsed CLI arguments."""
     if args.eval_only:
         return reevaluate_existing(args)
 
@@ -903,6 +917,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse physics-informed formulation study options."""
     parser = argparse.ArgumentParser(description="Run physics-informed PPO formulation comparisons.")
     parser.add_argument("--study-name", default="physics_informed_formulations_02_fair_500k")
     parser.add_argument("--env-mode", default=cfg.ENV_MODE_CHANGING, choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING])
@@ -943,6 +958,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments and launch the physics-informed formulation study."""
     run(parse_args())
 
 

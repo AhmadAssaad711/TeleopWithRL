@@ -36,6 +36,7 @@ from .rewarding import reward_variant_from_name
 
 
 def resolve_model_path(path: str | Path) -> Path:
+    """Resolve a DQN checkpoint or Q-table from a file or run directory."""
     path = Path(path)
     if path.is_file():
         return path
@@ -109,6 +110,11 @@ def evaluate_saved_policy(
     scenario_set: str | None,
     noise_std: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], dict[str, Any], float]:
+    """Evaluate a saved DQN or Q-learning policy on a scenario set.
+
+    Returns episode rows, aggregate metrics, per-step policy rows, a policy
+    summary, and the environment switch time used by the run.
+    """
     model_path = resolve_model_path(model_path)
     summary = _summary_for_model(model_path)
     family, state_variant, reward_variant, env_factory, env_kwargs = _build_eval_context(summary)
@@ -220,6 +226,7 @@ def save_evaluation_bundle(
     policy_summary_payload: dict[str, Any],
     env_switch_time: float,
 ) -> None:
+    """Write evaluation CSV/JSON summaries and diagnostic plots to ``out_dir``."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / f"{prefix}_metrics.csv"

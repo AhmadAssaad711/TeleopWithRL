@@ -75,6 +75,7 @@ _CONTINUOUS_ACTION_ALGOS = {
 
 
 def require_sb3() -> None:
+    """Raise a clear installation error when Stable-Baselines3 is unavailable."""
     if _SB3_IMPORT_ERROR is not None:
         raise ImportError(
             "Policy-gradient experiments require 'stable-baselines3'. "
@@ -83,6 +84,12 @@ def require_sb3() -> None:
 
 
 def load_reset_options_json(path: str | Path | None) -> list[dict[str, Any]]:
+    """Load a list of reset-option dictionaries from a JSON signal file.
+
+    The loader accepts a bare list or an object containing ``signals``,
+    ``reset_options``, or ``scenarios``. Rows containing a nested
+    ``reset_options`` object are flattened for direct use with ``env.reset``.
+    """
     if path is None:
         return []
     with open(Path(path), "r", encoding="utf-8") as handle:
@@ -107,6 +114,7 @@ def load_reset_options_json(path: str | Path | None) -> list[dict[str, Any]]:
 
 
 def algo_output_dir_name(algo: str) -> str:
+    """Map a public algorithm identifier to its checkpoint directory name."""
     algo = str(algo)
     if algo == PG_ALGO_PPO_CONTINUOUS:
         return "ppo"
@@ -120,6 +128,7 @@ def algo_output_dir_name(algo: str) -> str:
 
 
 def algo_notebook_tag(algo: str) -> str:
+    """Return the compact algorithm tag used by notebook result lookups."""
     algo = str(algo)
     if algo == PG_ALGO_PPO_CONTINUOUS:
         return "ppo"
@@ -133,6 +142,7 @@ def algo_notebook_tag(algo: str) -> str:
 
 
 def algo_display_name(algo: str) -> str:
+    """Return the human-readable label used in summaries and plots."""
     algo = str(algo)
     if algo == PG_ALGO_PPO_CONTINUOUS:
         return "PPO Continuous"
@@ -247,6 +257,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         return np.concatenate([self._temporal_obs_history[lag] for lag in self._temporal_lags]).astype(np.float32, copy=False)
 
     def set_reset_options_seed(self, seed: int) -> None:
+        """Seed the RNG used to sample training reset options."""
         self._reset_options_rng = np.random.default_rng(int(seed))
 
     def _sample_train_reset_options(self) -> dict[str, Any] | None:
@@ -256,6 +267,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         return dict(self.train_reset_options_pool[idx])
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        """Reset the wrapped environment and return transformed observation/info."""
         if seed is not None:
             self._reset_options_rng = np.random.default_rng(int(seed))
         if options is None:
@@ -266,6 +278,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         return self.last_obs.copy(), dict(info)
 
     def step(self, action):
+        """Apply a continuous voltage or discrete action and return a transition."""
         mapped_action = int(action) if self.is_discrete else action
         obs, reward, terminated, truncated, info = self.reward_env.step(mapped_action)
         self.last_obs = self._transform(obs, info)
@@ -279,6 +292,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         return self.last_obs.copy(), float(reward), bool(terminated), bool(truncated), info
 
     def render(self):
+        """Return the reward history augmented with state/algo metadata."""
         history = self.reward_env.render() or {}
         merged = dict(history)
         merged["state_variant_name"] = self.state_variant.name
@@ -290,6 +304,7 @@ class PolicyGradientReplicaEnv(gym.Env):
         return merged
 
     def close(self):
+        """Release the underlying replica environment resources."""
         if hasattr(self.base_env, "close"):
             self.base_env.close()
 
@@ -302,6 +317,7 @@ def build_policy_gradient_env_factory(
     reward_variant: RewardVariant,
     state_variant: DQNStateVariant,
 ) -> Callable[[], PolicyGradientReplicaEnv]:
+    """Return a fresh SB3-compatible environment factory for one variant."""
     def _factory() -> PolicyGradientReplicaEnv:
         return PolicyGradientReplicaEnv(
             algo=algo,
@@ -320,10 +336,13 @@ def _episode_steps(env_kwargs: dict[str, Any]) -> int:
 
 
 def total_timesteps_from_episodes(env_kwargs: dict[str, Any], total_episodes: int) -> int:
+    """Convert episode count to fixed-step timesteps using ``cfg.RL_DT``."""
     return int(max(1, total_episodes) * _episode_steps(env_kwargs))
 
 
 class PolicyGradientMetricsCallback(BaseCallback):
+    """Record episode/evaluation metrics and progress during SB3 training."""
+
     def __init__(
         self,
         *,
@@ -471,6 +490,12 @@ def evaluate_policy_gradient(
     seed_offset: int,
     reset_options_schedule: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
+    """Evaluate a policy greedily and return aggregate metrics plus histories.
+
+    ``env_factory`` must create ``PolicyGradientReplicaEnv`` instances. The
+    optional schedule is cycled over evaluation episodes and is also recorded
+    in the returned history for later scenario-level analysis.
+    """
     episode_metrics: list[dict[str, float]] = []
     episode_histories: list[dict[str, Any]] = []
     completed_episodes = 0
@@ -701,6 +726,7 @@ def save_policy_gradient_visuals(
     action_mode: str,
     action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None,
 ) -> None:
+    """Write the standard rollout, error, signal, control, action, and state plots."""
     plots_dir = Path(plots_dir)
     plot_average_core_rollout(history, plots_dir / "avg_roll.png", title, env_switch_time)
     plot_rollout_dashboard(history, plots_dir / "roll.png", title, env_switch_time)
@@ -730,6 +756,7 @@ def plot_policy_gradient_slices(
     algo: str,
     action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None,
 ) -> None:
+    """Plot two-dimensional policy-action slices over rollout observations."""
     obs = history_array(history, "obs", dtype=np.float32)
     labels = history_array(history, "env_label", dtype=object)
     if obs.size == 0 or getattr(state_variant, "obs_dim", 0) < 2:
@@ -1058,6 +1085,13 @@ def train_policy_gradient_variant(
     train_reset_options_pool: list[dict[str, Any]] | None = None,
     eval_reset_options_schedule: list[dict[str, Any]] | None = None,
 ) -> RunResult:
+    """Train one policy-gradient variant and serialize its full run bundle.
+
+    ``algo`` selects PPO, TD3, SAC, or discrete PPO. ``state_variant`` and
+    ``reward_variant`` define the observation and reward contracts. The
+    function creates model, summary, history, plot, and TensorBoard artifacts
+    below ``out_dir`` and returns the shared ``RunResult`` record.
+    """
     require_sb3()
 
     algo = str(algo)
@@ -1298,12 +1332,14 @@ def train_policy_gradient_variant(
 
 
 def get_policy_gradient_state_variant(name: str, spec_json: str | Path | None = None) -> DQNStateVariant:
+    """Resolve a named or JSON-defined continuous state variant."""
     if spec_json:
         return load_custom_dqn_state_variant(spec_json)
     return get_dqn_state_variant(name)
 
 
 def get_policy_gradient_reward_variant(name: str, spec_json: str | Path | None = None) -> RewardVariant:
+    """Resolve a named or JSON-defined reward variant."""
     if spec_json:
         return load_reward_variant_from_json(spec_json)
     return reward_variant_from_name(name)

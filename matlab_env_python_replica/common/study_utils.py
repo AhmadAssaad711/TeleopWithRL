@@ -36,6 +36,8 @@ FE_MODE_DIR_ALIASES = {
 
 @dataclass
 class RunResult:
+    """Canonical aggregate record returned by an algorithm training run."""
+
     label: str
     family: str
     mean_reward: float
@@ -55,15 +57,18 @@ class RunResult:
 
 
 def package_root() -> Path:
+    """Return the repository package root containing ``matlab_env_python_replica``."""
     return Path(__file__).resolve().parents[2]
 
 
 def results_root(fe_mode: str = FE_MODE_GUI) -> Path:
+    """Return and create the shared results root for an FE mode."""
     fe_dir = FE_MODE_DIR_ALIASES.get(str(fe_mode), str(fe_mode))
     return package_root() / DEFAULT_REPLICA_RESULTS_ROOT / fe_dir
 
 
 def timestamped_name(prefix: str) -> str:
+    """Return a filesystem-safe name with the current local timestamp."""
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
@@ -86,6 +91,7 @@ def require_tensorboard():
 
 
 def moving_avg(x: np.ndarray, window: int) -> np.ndarray:
+    """Return a centered moving average without changing the input array."""
     if x.size == 0:
         return x
     width = max(1, min(int(window), x.size))
@@ -104,6 +110,7 @@ def _moving_avg_seconds(t: np.ndarray, values: np.ndarray, seconds: float = 1.0)
 
 
 def history_array(history: dict[str, Any], key: str, dtype=np.float64) -> np.ndarray:
+    """Convert one history field to an array, tolerating mixed/object values."""
     values = history.get(key, [])
     try:
         return np.asarray(values, dtype=dtype)
@@ -126,6 +133,7 @@ def _stable_divide_array(numerator: np.ndarray, denominator: np.ndarray, eps: fl
 
 
 def transparency_ratio_array(history: dict[str, Any], suffix: str = "") -> np.ndarray:
+    """Return the force/velocity transparency ratio from a rollout history."""
     f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
     v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
     f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
@@ -159,6 +167,7 @@ def transparency_ratio_array(history: dict[str, Any], suffix: str = "") -> np.nd
 
 
 def transparency_power_error_array(history: dict[str, Any], suffix: str = "") -> np.ndarray:
+    """Return the legacy power-error series in watts."""
     f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
     v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
     f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
@@ -180,6 +189,7 @@ def monitored_transparency_ratio_array(
     velocity_eps: float = 1e-6,
     impedance_eps: float = 1e-6,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return monitored ratio values and a boolean mask of valid samples."""
     f_h = history_array(history, f"F_h{suffix}", dtype=np.float64)
     v_m = history_array(history, f"v_m{suffix}", dtype=np.float64)
     f_e = history_array(history, f"F_e{suffix}", dtype=np.float64)
@@ -206,6 +216,7 @@ def transparency_ratio_metrics(
     *,
     tolerance: float = 0.20,
 ) -> dict[str, float]:
+    """Summarize ratio mean, median, validity, error, and tolerance coverage."""
     ratio, valid = monitored_transparency_ratio_array(history, suffix=suffix)
     finite = np.isfinite(ratio)
     values = ratio[finite]
@@ -340,12 +351,14 @@ def json_default(value: Any):
 
 
 def save_json(path: str | Path, payload: dict[str, Any]) -> None:
+    """Serialize a JSON-compatible payload, including NumPy and Path values."""
     path = Path(path)
     with open(_plot_save_path(path), "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, default=json_default)
 
 
 def save_history_npz(history: dict[str, Any], out_path: str | Path) -> None:
+    """Serialize a rollout history to a compressed-friendly NumPy archive."""
     out_path = Path(out_path)
     payload: dict[str, Any] = {}
     for key, value in history.items():
@@ -360,6 +373,7 @@ def save_history_npz(history: dict[str, Any], out_path: str | Path) -> None:
 
 
 def q_gap(q_values: np.ndarray) -> float:
+    """Return the difference between the largest and second-largest Q values."""
     q_values = np.asarray(q_values, dtype=np.float64).reshape(-1)
     if q_values.size == 0:
         return 0.0
@@ -374,6 +388,7 @@ def resolve_action_levels(
     *,
     expected_n_actions: int | None = None,
 ) -> np.ndarray:
+    """Normalize action levels and optionally validate their expected count."""
     levels = np.asarray(cfg.V_LEVELS if action_levels is None else action_levels, dtype=np.float64).reshape(-1)
     if levels.size == 0:
         raise ValueError("action_levels must contain at least one voltage level")
@@ -385,6 +400,7 @@ def resolve_action_levels(
 
 
 def greedy_q_action(q_values: np.ndarray, action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None) -> int:
+    """Return a deterministic best-action index, preferring zero voltage on ties."""
     q_values = np.asarray(q_values, dtype=np.float64).reshape(-1)
     levels = resolve_action_levels(action_levels, expected_n_actions=q_values.size)
     max_q = float(np.max(q_values))
@@ -394,6 +410,7 @@ def greedy_q_action(q_values: np.ndarray, action_levels: list[float] | tuple[flo
 
 
 def mk_run_dirs(base_dir: str | Path) -> dict[str, str]:
+    """Create and return canonical model/log/plot/episode/TensorBoard paths."""
     base = Path(base_dir)
     tb_override = os.environ.get("TELEOP_TENSORBOARD_ROOT")
     if tb_override:
@@ -415,12 +432,14 @@ def mk_run_dirs(base_dir: str | Path) -> dict[str, str]:
 
 
 def study_root(study_name: str | None, family_name: str) -> Path:
+    """Create and return a shared family/study result directory."""
     root = results_root() / family_name / (study_name or timestamped_name(family_name))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def history_with_obs(history: dict[str, Any], obs_trace: list[np.ndarray]) -> dict[str, Any]:
+    """Copy a history and attach the normalized observation trace."""
     merged = dict(history)
     merged["obs"] = [np.asarray(obs, dtype=np.float32) for obs in obs_trace]
     return merged
@@ -459,6 +478,7 @@ def _aggregate_object_series(arrays: list[np.ndarray]) -> np.ndarray:
 
 
 def aggregate_episode_histories(histories: list[dict[str, Any]]) -> dict[str, Any]:
+    """Align episode histories and compute elementwise aggregate series."""
     if not histories:
         return {}
 
@@ -498,6 +518,7 @@ def aggregate_episode_histories(histories: list[dict[str, Any]]) -> dict[str, An
 
 
 def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str, float]:
+    """Compute shared tracking, force, transparency, control, and status metrics."""
     rewards = history_array(history, "reward", dtype=np.float64)
     pos_error = history_array(history, "pos_error", dtype=np.float64)
     transparency_power_error = transparency_power_error_array(history)
@@ -585,6 +606,7 @@ def rollout_metrics(history: dict[str, Any], env_switch_time: float) -> dict[str
 
 
 def write_run_summary(dirs: dict[str, str], result: RunResult, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write the canonical JSON/text run summary and return its payload."""
     payload = {
         "label": result.label,
         "family": result.family,
@@ -620,6 +642,7 @@ def save_training_plot(
     losses: np.ndarray | None = None,
     eval_payload: dict[str, np.ndarray] | None = None,
 ) -> None:
+    """Write learning curves and optional loss/evaluation traces."""
     n_rows = 4 if losses is not None and losses.size else 3
     fig, axes = plt.subplots(n_rows, 1, figsize=(12, 3.5 * n_rows), sharex=True)
     axes = np.atleast_1d(axes)
@@ -1329,6 +1352,7 @@ def save_common_visuals(
     env_switch_time: float,
     action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None,
 ) -> None:
+    """Write standard rollout, control, error, and action diagnostics."""
     plots_dir = Path(plots_dir)
     plot_average_core_rollout(history, plots_dir / "avg_roll.png", title, env_switch_time)
     plot_rollout_dashboard(history, plots_dir / "roll.png", title, env_switch_time)
@@ -1608,6 +1632,7 @@ def policy_summary(
 
 
 def plot_episode_metrics(rows: list[dict[str, Any]], out_path: Path) -> None:
+    """Write episode-level metric traces to ``out_path``."""
     episodes = np.asarray([row["episode"] for row in rows], dtype=np.int64)
     returns = np.asarray([row["episode_return"] for row in rows], dtype=np.float64)
     tracking = np.asarray([row["tracking_rmse_mm"] for row in rows], dtype=np.float64)
@@ -1635,6 +1660,7 @@ def plot_episode_metrics(rows: list[dict[str, Any]], out_path: Path) -> None:
 
 
 def plot_summary_bars(summary: dict[str, Any], out_path: Path) -> None:
+    """Write a compact bar comparison from a saved-policy summary."""
     labels = ["Return", "Track RMSE [mm]", "Transp ratio", "Mean |u_v| [V]", "Mean Q-gap"]
     values = [summary["mean_return"], summary["mean_tracking_rmse_mm"], summary["mean_transparency_rmse_w"], summary["mean_abs_u_v"], summary["mean_q_gap"]]
     fig, ax = plt.subplots(figsize=(11, 5))
@@ -1656,6 +1682,7 @@ def plot_policy_dashboard(
     env_switch_time: float,
     action_levels: list[float] | tuple[float, ...] | np.ndarray | None = None,
 ) -> None:
+    """Write policy-step action and Q-value diagnostics."""
     if not policy_rows:
         return
     action_levels = resolve_action_levels(action_levels)
@@ -1771,6 +1798,7 @@ def plot_scenario_dashboard(rows: list[dict[str, Any]], out_path: Path) -> None:
 
 
 def scenario_plan(scenario_set: str | None, noise_std: float) -> list[dict[str, Any]] | None:
+    """Return a named saved-policy scenario plan or ``None`` for repeats."""
     amp = float(cfg.FORCE_INPUT_AMP)
     phase = float(cfg.FORCE_INPUT_PHASE)
     if scenario_set is None:
@@ -1810,10 +1838,12 @@ def scenario_plan(scenario_set: str | None, noise_std: float) -> list[dict[str, 
 
 
 def stage_completed(stage_dir: str | Path) -> bool:
+    """Return whether a staged study has produced its summary CSV."""
     return (Path(stage_dir) / "study_summary.csv").exists()
 
 
 def stage_summary_rows_to_csv(rows: list[dict[str, Any]], out_path: str | Path) -> None:
+    """Write stage summary dictionaries to a stable CSV table."""
     import csv
 
     if not rows:
@@ -1825,5 +1855,6 @@ def stage_summary_rows_to_csv(rows: list[dict[str, Any]], out_path: str | Path) 
 
 
 def load_summary_json(summary_path: str | Path) -> dict[str, Any]:
+    """Load and return a JSON summary from an explicit path."""
     with open(summary_path, "r", encoding="utf-8") as fh:
         return json.load(fh)

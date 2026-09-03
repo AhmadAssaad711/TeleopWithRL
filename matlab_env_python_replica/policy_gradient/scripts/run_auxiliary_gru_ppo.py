@@ -1480,6 +1480,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse auxiliary-GRU study options without starting training."""
     parser = argparse.ArgumentParser(description="Run GRU-PPO auxiliary dynamics-head ablations.")
     parser.add_argument("--study-name", default="physics_auxiliary_gru_ppo_02_fair_500k")
     parser.add_argument("--calibration-study", default="physics_informed_formulations_02_fair_500k")
@@ -1534,6 +1535,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments and launch the auxiliary-GRU PPO study."""
     run(parse_args())
 
 

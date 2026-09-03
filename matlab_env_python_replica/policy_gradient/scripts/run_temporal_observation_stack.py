@@ -53,6 +53,8 @@ else:
 
 @dataclass(frozen=True)
 class TemporalFormulation:
+    """Definition of one temporal observation-stack configuration."""
+
     key: str
     label: str
     state_features: tuple[str, ...]
@@ -169,6 +171,7 @@ def _term(name: str, source: str, weight: float, scale_name: str) -> dict[str, A
 
 
 def build_state_spec(formulation: TemporalFormulation) -> dict[str, Any]:
+    """Build the JSON state specification for one temporal formulation."""
     spec: dict[str, Any] = {
         "name": f"{formulation.key}_state",
         "description": formulation.note,
@@ -184,6 +187,7 @@ def build_state_spec(formulation: TemporalFormulation) -> dict[str, Any]:
 
 
 def build_reward_spec(formulation: TemporalFormulation) -> dict[str, Any]:
+    """Build the shared tracking/effort reward specification."""
     return {
         "name": f"{formulation.key}_reward",
         "description": f"Tracking/effort reward for temporal observation study: {formulation.key}.",
@@ -214,11 +218,13 @@ def build_reward_spec(formulation: TemporalFormulation) -> dict[str, Any]:
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
+    """Load one JSON object used by the temporal-stack study."""
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write the fixed-column temporal comparison table to CSV."""
     path = Path(path)
     os.makedirs(_long_path(path.parent), exist_ok=True)
     with open(_long_path(path), "w", encoding="utf-8", newline="") as handle:
@@ -244,6 +250,7 @@ def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def aggregate_focused_metrics(path: Path) -> dict[str, float]:
+    """Aggregate focused-evaluation rows into one temporal-stack row."""
     try:
         with open(_long_path(path), "r", encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
@@ -276,6 +283,7 @@ def collect_available_rows(
     formulations: tuple[TemporalFormulation, ...],
     current_rows: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Load completed temporal summaries while preserving current rows."""
     current_rows = dict(current_rows or {})
     rows: list[dict[str, Any]] = []
     for formulation in formulations:
@@ -316,6 +324,7 @@ def row_from_summary(
     summary: dict[str, Any],
     focused: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    """Normalize one temporal summary into the study-table schema."""
     eval_metrics = dict(summary.get("eval_metrics") or {})
     row: dict[str, Any] = {
         "key": formulation.key,
@@ -362,6 +371,7 @@ def _maybe_symlog(ax, values: list[float]) -> None:
 
 
 def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write temporal-stack metric and learning-curve plots."""
     if not rows:
         return
     labels = [str(row["key"]).replace("_", "\n") for row in rows]
@@ -417,6 +427,7 @@ def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_root: Path) -> None:
+    """Write a human-readable temporal-stack summary with units."""
     lines = [
         "# Temporal Observation Stack Study",
         "",
@@ -454,6 +465,7 @@ def write_summary_markdown(root: Path, rows: list[dict[str, Any]], tensorboard_r
 
 
 def run(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run the temporal-stack training/evaluation workflow."""
     root = policy_gradient_suite_root(args.fe_mode, args.study_name)
     root.mkdir(parents=True, exist_ok=True)
     specs_root = root / "specs"
@@ -589,6 +601,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse temporal-observation comparison options."""
     parser = argparse.ArgumentParser(description="Run PPO temporal-observation-stack comparisons.")
     parser.add_argument("--study-name", default="temporal_observation_stack_02_fair_500k")
     parser.add_argument("--env-mode", default=cfg.ENV_MODE_CHANGING, choices=[cfg.ENV_MODE_CONSTANT, cfg.ENV_MODE_CHANGING])
@@ -627,6 +640,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments and launch the temporal observation-stack study."""
     run(parse_args())
 
 

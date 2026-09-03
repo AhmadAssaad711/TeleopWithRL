@@ -75,6 +75,8 @@ BASIC_OBS_FEATURES = ("x_m", "x_s", "v_m", "v_s", "u_v")
 
 @dataclass(frozen=True)
 class RewardAblation:
+    """Definition of one reward-term ablation with a fixed observation set."""
+
     key: str
     label: str
     terms: tuple[dict[str, Any], ...]
@@ -182,6 +184,7 @@ def _robust_scale(values: list[np.ndarray], fallback: float) -> float:
 
 
 def calibrate_scale_catalog(results_root: Path, calibration_study: str) -> dict[str, dict[str, Any]]:
+    """Estimate reward-term scales from a previously completed calibration study."""
     calibration_root = results_root.parent / str(calibration_study)
     paths = list(calibration_root.glob("F*/ppo/e/test.npz"))
     paths.extend(calibration_root.glob("force_bias_15_test/F*/bias15_test.npz"))
@@ -222,6 +225,7 @@ def calibrate_scale_catalog(results_root: Path, calibration_study: str) -> dict[
 
 
 def build_ablations() -> tuple[RewardAblation, ...]:
+    """Return the ordered reward ablations used by the comparison study."""
     e = _term("tracking_error", "tracking_error", 1.0, "tracking_error_scale")
     edot = _term("velocity_error", "velocity_error", 1.0, "velocity_error_scale")
     sliding = _term("sliding_error", "sliding_error", 1.0, "sliding_error_scale")
@@ -273,6 +277,7 @@ def build_ablations() -> tuple[RewardAblation, ...]:
 
 
 def build_state_spec() -> dict[str, Any]:
+    """Return the fixed basic-observation JSON specification."""
     return {
         "name": "basic_obs_xm_xs_vm_vs_u",
         "description": "Basic observation space shared by all reward-ablation runs.",
@@ -281,6 +286,7 @@ def build_state_spec() -> dict[str, Any]:
 
 
 def build_reward_spec(ablation: RewardAblation, scale_catalog: dict[str, Any]) -> dict[str, Any]:
+    """Build a JSON-serializable reward specification for one ablation."""
     return {
         "name": f"{ablation.key}_reward",
         "description": ablation.note,
@@ -305,6 +311,7 @@ def build_reward_spec(ablation: RewardAblation, scale_catalog: dict[str, Any]) -
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write non-empty dictionary rows to a headered CSV file."""
     if not rows:
         return
     path = Path(path)
@@ -321,6 +328,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def load_json(path: Path) -> dict[str, Any]:
+    """Load one JSON object used by the reward-ablation study."""
     with path.open("r", encoding="utf-8") as handle:
         import json
 
@@ -335,6 +343,7 @@ def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def aggregate_focused_metrics(path: Path) -> dict[str, float]:
+    """Aggregate focused-evaluation rows into one reward-ablation row."""
     rows = _read_csv_rows(path)
     if not rows:
         return {}
@@ -359,6 +368,7 @@ def aggregate_focused_metrics(path: Path) -> dict[str, float]:
 
 
 def row_from_summary(ablation: RewardAblation, summary: dict[str, Any], focused: dict[str, float]) -> dict[str, Any]:
+    """Normalize one saved ablation summary into the study-table schema."""
     eval_metrics = dict(summary.get("eval_metrics") or {})
     train_path = Path(str(summary.get("out_dir", ""))) / "l" / "train.npz"
     train_completed_episodes = 0
@@ -429,6 +439,7 @@ def collect_available_rows(
     ablations: list[RewardAblation],
     current_rows: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Load completed ablation summaries, preserving rows already in memory."""
     current_rows = dict(current_rows or {})
     rows: list[dict[str, Any]] = []
     for ablation in ablations:
@@ -444,6 +455,7 @@ def collect_available_rows(
 
 
 def plot_summary(root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write reward-ablation metric comparison plots."""
     if not rows:
         return
     labels = [str(row["key"]).replace("_", "\n") for row in rows]
@@ -535,6 +547,7 @@ def _as_float(value: Any, default: float = math.nan) -> float:
 
 
 def plot_training_curves(root: Path, ablations: list[RewardAblation]) -> None:
+    """Write evaluation learning curves for available ablation runs."""
     series: list[tuple[RewardAblation, dict[str, np.ndarray]]] = []
     for ablation in ablations:
         train_path = root / ablation.key / "ppo" / "l" / "train.npz"
@@ -577,6 +590,7 @@ def plot_training_curves(root: Path, ablations: list[RewardAblation]) -> None:
 
 
 def plot_group_heatmap(root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write a heatmap comparing normalized reward-term groups."""
     if not rows:
         return
     keys = [str(row["key"]) for row in rows]
@@ -627,6 +641,7 @@ def plot_group_heatmap(root: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def run(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run the reward-ablation training/evaluation workflow."""
     root = policy_gradient_suite_root(args.fe_mode, args.study_name)
     root.mkdir(parents=True, exist_ok=True)
     specs_root = root / "specs"
@@ -761,6 +776,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse fixed-observation reward-ablation options."""
     parser = argparse.ArgumentParser(description="Run physics-informed reward ablations with fixed basic observations.")
     parser.add_argument("--study-name", default="physics_reward_ablation_basic_obs_03_fair_500k")
     parser.add_argument("--calibration-study", default="physics_informed_formulations_02_fair_500k")
@@ -807,6 +823,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments and launch the reward-ablation study."""
     run(parse_args())
 
 

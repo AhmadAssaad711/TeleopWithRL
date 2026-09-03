@@ -38,6 +38,7 @@ def build_qlearning_env_factory(
     env_kwargs: dict,
     reward_variant: RewardVariant,
 ):
+    """Return a factory producing fresh reward-wrapped replica environments."""
     def _factory():
         base_env = SimuOriginalReplicaEnv(
             env_mode=env_mode,
@@ -56,6 +57,7 @@ def evaluate_qlearning(
     n_episodes: int,
     seed_offset: int,
 ) -> tuple[dict[str, float], dict[str, Any]]:
+    """Evaluate a tabular policy greedily and return metrics plus history."""
     episode_metrics: list[dict[str, float]] = []
     episode_histories: list[dict[str, Any]] = []
     completed_episodes = 0
@@ -150,6 +152,12 @@ def train_qlearning_variant(
     seed: int,
     label: str,
 ) -> RunResult:
+    """Train one Q-learning state/reward variant and write its artifacts.
+
+    The state encoder supplies the integer tuple used by the sparse table. The
+    returned ``RunResult`` and the files under ``out_dir`` follow the shared
+    DQN/policy-gradient result contract.
+    """
     writer_cls = require_tensorboard()
     dirs = mk_run_dirs(out_dir)
     writer = writer_cls(log_dir=dirs["tensorboard"])

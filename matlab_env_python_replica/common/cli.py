@@ -17,6 +17,20 @@ FE_MODE_DIR_ALIASES = {
 
 
 def results_root_for_fe_mode(results_root: str | None = None, fe_mode: str = FE_MODE_GUI) -> str:
+    """Return a normalized result root with the FE-mode directory appended.
+
+    Parameters
+    ----------
+    results_root:
+        Base path supplied by a caller. When omitted, use the shared default.
+    fe_mode:
+        FE mode name or its short directory alias (``gui``/``dyn``).
+
+    Returns
+    -------
+    str
+        A POSIX-style path suitable for configuration and result manifests.
+    """
     base = Path(results_root or DEFAULT_RESULTS_ROOT)
     fe_mode = FE_MODE_DIR_ALIASES.get(str(fe_mode), str(fe_mode))
     root = base if base.name == fe_mode else base / fe_mode
@@ -24,6 +38,11 @@ def results_root_for_fe_mode(results_root: str | None = None, fe_mode: str = FE_
 
 
 def configure_results_root(results_root: str | None = None, fe_mode: str = FE_MODE_GUI) -> str:
+    """Set and return the process-wide result root used by experiment code.
+
+    The value is written both to ``TELEOP_RESULTS_ROOT_DIR`` and to
+    ``config.RESULTS_ROOT_DIR`` so legacy runners and new package code agree.
+    """
     root = results_root_for_fe_mode(results_root, fe_mode)
     os.environ["TELEOP_RESULTS_ROOT_DIR"] = root
     cfg.RESULTS_ROOT_DIR = root
@@ -31,6 +50,14 @@ def configure_results_root(results_root: str | None = None, fe_mode: str = FE_MO
 
 
 def replica_env_kwargs_from_args(args, *, episode_duration: float | None = None, env_switch_time: float | None = None) -> dict:
+    """Translate an argparse namespace into replica-environment settings.
+
+    The returned dictionary is accepted by ``SimuOriginalReplicaEnv``. Force
+    and FE settings are placed inside its ``reset_options`` mapping; duration,
+    termination, stroke, and action settings remain constructor keywords.
+    Missing namespace attributes fall back to configuration constants, which
+    lets different algorithm launchers share this adapter.
+    """
     kwargs = {
         "episode_duration": float(args.episode_duration if getattr(args, "episode_duration", None) is not None else episode_duration or cfg.EPISODE_DURATION),
         "env_switch_time": float(args.env_switch_time if getattr(args, "env_switch_time", None) is not None else env_switch_time or cfg.PAPER_ENV_SWITCH_TIME),
