@@ -50,11 +50,11 @@ The normalization target for those outputs is documented in:
 
 - `results_index/README.md`
 
-The current tracked result tables and figures are in:
+The current selected-model table and figures are in:
 
 - `results_index/all_results.md`
 - `results_index/figures/`
 
-The result READMEs are intentionally scoped to their experiment family. The
-canonical report is the source for the complete 25-variant table, so a metric
-does not need to be copied independently into every notebook description.
+The result READMEs are intentionally scoped to their experiment family. They
+report only the selected models; the underlying comparable-run audit remains in
+`results_index/runs.csv`.

@@ -19,8 +19,7 @@ See [`../API.md`](../API.md) for function input/output contracts and
 ## Result metrics
 
 The shared metric contract produces tracking, post-contact, transparency,
-ratio-validity, control-smoothness, and termination metrics. The tracked
-25-variant report is [`../../results_index/all_results.md`](../../results_index/all_results.md);
-it uses focused-evaluation aggregates consistently and keeps ratio validity
-next to the ratio statistic because velocity-denominator singularities can
-otherwise make a ratio look misleadingly precise.
+ratio-validity, control-smoothness, and termination metrics. The selected-model
+README tables use focused-evaluation aggregates consistently and keep ratio
+validity next to the ratio statistic because velocity-denominator singularities
+can otherwise make a ratio look misleadingly precise.

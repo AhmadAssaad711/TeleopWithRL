@@ -20,6 +20,6 @@ singularity at approximately `33.793 s` and bounded behavior through `40 s`
 under the reduced input `F_h(t) = 5 + 5 sin(0.5t)`.
 
 The raw MATLAB export is not present in this checkout, so the notebook remains
-the reproducibility entry point rather than a tracked static plot. The RL
-comparison figures are collected in
-[`results_index/all_results.md`](../../results_index/all_results.md).
+the reproducibility entry point rather than a tracked static plot. This README
+is limited to the MATLAB/Python parity result; the selected RL models are
+reported in the policy-gradient READMEs.

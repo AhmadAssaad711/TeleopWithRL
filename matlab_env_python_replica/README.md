@@ -92,8 +92,21 @@ for local results; their source code has moved into the packages above. Use
 
 ## Current results
 
-The tracked report in [`../results_index/all_results.md`](../results_index/all_results.md)
-contains the 25-variant fair-bias-15 PPO snapshot, including tables and graphs.
-The generated study folders remain local under
-`policy_gradient_experiments/results/`; the tracked figures are kept in
-[`../results_index/figures/`](../results_index/figures/).
+Only the selected models are reported here. `F4_accel_state` is the primary
+tracking candidate; `R5_second_order` and `T3_posvel_current` are retained as
+reward-design and temporal-observation alternatives.
+
+| Model | Training endpoint track RMSE [mm] | Training endpoint transp. RMSE [W] | Focused eval track [mm] | Focused eval post-contact [mm] | Focused eval transp. [W] | Ratio | Valid |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `F4_accel_state` | **3.377** | **1.566** | **3.535** | 2.411 | 1.348 | 0.776 | 64.8% |
+| `R5_second_order` | 6.594 | 2.249 | 8.386 | 7.162 | **1.272** | **1.009** | 55.5% |
+| `T3_posvel_current` | 5.440 | 2.335 | 5.177 | 3.348 | 1.357 | 1.075 | 57.0% |
+
+![Selected-model training telemetry](../results_index/figures/selected_models_training.png)
+
+![Selected-model evaluation bars](../results_index/figures/selected_models_evaluation_bars.png)
+
+The training graph uses the saved `train.npz` callback-scalar export because
+the current checkout contains no TensorBoard event files. Evaluation is shown
+only with bar graphs. The complete model-selection notes are recorded in the
+selected results report under `../results_index/`.

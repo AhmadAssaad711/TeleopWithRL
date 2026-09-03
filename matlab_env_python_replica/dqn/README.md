@@ -24,5 +24,5 @@ helpers are in `../common/`.
 No portable DQN result artifacts are present in this checkout. Executed
 notebooks may retain embedded historical output, but the old result-index rows
 pointed to missing paths and are therefore not reported as reproducible current
-numbers. When DQN runs are restored, add their normalized summaries and graphs to
-[`../../results_index/all_results.md`](../../results_index/all_results.md).
+numbers. When DQN runs are restored, add only the selected baseline summary and
+its evaluation bar graph using the same conventions as the current report.
