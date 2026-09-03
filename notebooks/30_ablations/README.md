@@ -33,6 +33,6 @@ transparency objective.
 
 ![Reward ablation group heatmap](../../results_index/figures/reward_ablation_group_heatmap.png)
 
-The complete cross-study table is in
-[`results_index/all_results.md`](../../results_index/all_results.md), and the
-machine-readable rows are in [`results_index/runs.csv`](../../results_index/runs.csv).
+This README contains the exact R0-R8 results table and all three ablation
+graphs. The machine-readable rows are in
+[`results_index/runs.csv`](../../results_index/runs.csv).
