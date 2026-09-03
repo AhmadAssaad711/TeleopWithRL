@@ -15,3 +15,12 @@ import them for analysis. Algorithm-specific learning code belongs in `dqn/`,
 
 See [`../API.md`](../API.md) for function input/output contracts and
 [`../CLI.md`](../CLI.md) for launcher options and generated-artifact rules.
+
+## Result metrics
+
+The shared metric contract produces tracking, post-contact, transparency,
+ratio-validity, control-smoothness, and termination metrics. The tracked
+25-variant report is [`../../results_index/all_results.md`](../../results_index/all_results.md);
+it uses focused-evaluation aggregates consistently and keeps ratio validity
+next to the ratio statistic because velocity-denominator singularities can
+otherwise make a ratio look misleadingly precise.

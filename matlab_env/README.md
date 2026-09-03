@@ -26,3 +26,6 @@ Observed behavior:
 
 Historical duplicate `.slx` files and Simulink cache artifacts were removed so
 this folder stays focused on the single reference model.
+
+The recorded MATLAB/Python parity results are maintained with the parity
+notebook in [`../notebooks/10_matlab_literal_env/README.md`](../notebooks/10_matlab_literal_env/README.md).

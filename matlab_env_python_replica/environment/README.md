@@ -21,3 +21,10 @@ The observation is a normalized 10-element `float32` vector. `reset` returns
 `(observation, info)` and `step`/`step_voltage` return the standard Gymnasium
 5-tuple. See the module docstring in `simuoriginal_env.py` for the exact
 observation order, accepted action forms, reward terms, and termination rules.
+
+## Validation result
+
+The recorded MATLAB GUI parity run gives correlations of `0.99895` for `x_m`,
+`0.99863` for `x_s`, and `0.99751` for `Fe`. The plant also reproduces the
+open-loop singularity near `33.793 s`. The detailed parity notebook is
+[`notebooks/10_matlab_literal_env/10_io_parity.ipynb`](../../notebooks/10_matlab_literal_env/10_io_parity.ipynb).

@@ -17,3 +17,11 @@ python -m TeleopWithRL.matlab_env_python_replica.ql.scripts.run_baselines_both_f
 
 Generated files remain under `../ql_experiments/results/` for compatibility;
 the old directory is data storage only.
+
+## Result status
+
+No portable Q-learning result artifacts are present in this checkout. Executed
+notebooks may retain embedded historical output, but the old result-index rows
+pointed to missing paths and are therefore not reported as reproducible current
+numbers. When Q-learning runs are restored, add their normalized summaries and
+graphs to [`../../results_index/all_results.md`](../../results_index/all_results.md).

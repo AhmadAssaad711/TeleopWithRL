@@ -18,3 +18,11 @@ python -m TeleopWithRL.matlab_env_python_replica.dqn.scripts.run_baselines_both_
 Generated files remain under `../dqn_experiments/results/` for compatibility;
 the old directory is data storage only. Shared orchestration and evaluation
 helpers are in `../common/`.
+
+## Result status
+
+No portable DQN result artifacts are present in this checkout. Executed
+notebooks may retain embedded historical output, but the old result-index rows
+pointed to missing paths and are therefore not reported as reproducible current
+numbers. When DQN runs are restored, add their normalized summaries and graphs to
+[`../../results_index/all_results.md`](../../results_index/all_results.md).

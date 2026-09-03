@@ -51,6 +51,45 @@ The notebooks are intentionally separated into their own top-level folder.
 - `notebooks/50_policy_gradient/`: PPO, TD3, SAC, and policy-gradient planning.
 - `notebooks/90_results/90_results_catalog.ipynb`: organized results catalog.
 
+## Current Results Snapshot
+
+The latest comparable protocol is the fair, force-bias-15 PPO study: 500,000
+training steps, 32 test episodes, one training/evaluation signal, and 25
+focused evaluation scenarios. The tracked tables use focused-evaluation
+metrics consistently; lower tracking RMSE is better, while a transparency ratio
+near `1.0` is better.
+
+| Study | Candidate | Focused tracking RMSE | Ratio statistic | Status |
+|---|---|---:|---:|---|
+| Reward ablation | `R5_second_order` | 8.386 mm | 1.009 | balanced reward candidate |
+| Physics-informed | `F4_accel_state` | 3.535 mm | 0.776 | strongest tracking candidate |
+| Temporal observation | `T3_posvel_current` | 5.177 mm | 1.075 | best tracking/transparency balance |
+| Auxiliary GRU | none selected | 76.529–123.245 mm | 0.000–0.366 | not ready for selection |
+
+These are not yet multi-seed conclusions. The complete 25-variant table,
+validity checks, and figure gallery are in
+[`results_index/all_results.md`](results_index/all_results.md).
+
+### Result figures
+
+<details>
+<summary>Open the current comparison graphs</summary>
+
+![Reward ablation comparison](results_index/figures/reward_ablation_summary.png)
+
+![Physics-informed comparison](results_index/figures/physics_informed_summary_bars.png)
+
+![Temporal observation comparison](results_index/figures/temporal_summary_bars.png)
+
+![Auxiliary GRU comparison](results_index/figures/gru_auxiliary_summary.png)
+
+The physics-informed and temporal bar charts use each study's overall test
+aggregate fields; the detailed report tables use the focused 25-scenario
+metrics. The figures are therefore comparison views, while the tables are the
+canonical values for the current catalog.
+
+</details>
+
 ## MATLAB Assets
 
 The MATLAB pieces are split deliberately:
@@ -83,8 +122,19 @@ and machine-specific.
 
 Tracked result organization lives in `results_index/`:
 
-- `results_index/runs.csv` is the flat catalog used by notebooks.
+- `results_index/runs.csv` is the normalized flat catalog for the current
+  comparable runs.
+- `results_index/all_results.md` is the human-readable report containing every
+  current variant and its graphs.
+- `results_index/figures/` contains the small, tracked figures used by the
+  documentation.
 - `results_index/manifests/` is reserved for per-run JSON manifests.
+
+The old MATLAB/DQN/Q-learning rows were removed from the current catalog because
+their raw result roots are not present in this checkout. Some executed notebooks
+still contain embedded historical tables or images; those are archive evidence,
+not reproducible current rows, and remain identified as unavailable in the
+relevant README files.
 
 Raw generated outputs, when present locally, usually live under:
 

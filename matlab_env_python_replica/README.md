@@ -89,3 +89,11 @@ locations are intentionally kept stable while source code is reorganized:
 The old `*_experiments` directories now serve only as compatibility locations
 for local results; their source code has moved into the packages above. Use
 `../results_index/` and `../notebooks/90_results/` to curate and review outputs.
+
+## Current results
+
+The tracked report in [`../results_index/all_results.md`](../results_index/all_results.md)
+contains the 25-variant fair-bias-15 PPO snapshot, including tables and graphs.
+The generated study folders remain local under
+`policy_gradient_experiments/results/`; the tracked figures are kept in
+[`../results_index/figures/`](../results_index/figures/).

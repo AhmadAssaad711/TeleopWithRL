@@ -1,47 +1,66 @@
-# Results Index Workspace
+# Results Index
 
-This folder is the landing zone for a normalized, notebook-friendly view of the
-repo's experiment artifacts.
+This folder is the tracked, reviewable summary of the experiment results. Raw
+training trees remain local because they contain large model, history, plot,
+TensorBoard, and machine-specific path artifacts.
 
-Raw generated result trees are intentionally kept out of Git:
+## Current catalog
 
-- `matlab_env_python_replica/results/`
-- `matlab_env_python_replica/dqn_experiments/results/`
-- `matlab_env_python_replica/ql_experiments/results/`
-- `matlab_env_python_replica/policy_gradient_experiments/results/`
+[`runs.csv`](runs.csv) contains the normalized rows for the latest comparable
+PPO protocol. [`all_results.md`](all_results.md) is the human-readable report
+with every current variant and the tracked graphs.
 
-Why this folder exists:
+The current catalog contains 25 variants in four fair-bias-15 studies:
 
-- result naming is currently inconsistent across study families
-- many paths are long enough to trigger Windows path-length failures
-- notebooks need short, stable references that are easier to query
+- 9 reward formulations (`R0`–`R8`)
+- 7 physics-informed formulations (`F0`–`F6`)
+- 5 temporal observation formulations (`T0`–`T4`)
+- 4 auxiliary GRU formulations (`G0`–`G3`)
 
-Target model for each indexed run:
+The common protocol is 500,000 training steps and 32 test episodes. Each study
+uses one training signal and one evaluation signal, and the focused battery
+contains 25 scenarios. These are single-study results, not multi-seed claims.
 
-- `run_id`
-- `family`
-- `source_root`
-- `raw_path`
-- `env_mode`
-- `fe_mode`
-- `agent`
-- `state_variant`
-- `reward_variant`
-- `episode_duration`
-- `switch_time`
-- `train_episodes`
-- `test_episodes`
-- `summary_path`
-- `plots_path`
-- `model_path`
+## Metric policy
 
-Current contents:
+- Tracking RMSE and post-contact RMSE are reported in millimetres; lower is
+  better.
+- Transparency RMSE is the focused power/transparency error in watts; lower is
+  better.
+- The transparency-ratio statistic should be near `1.0`.
+- Ratio validity and the fraction within ±20% are reported because ratios are
+  unstable when the velocity denominator is near zero.
+- Failure rate is reported separately from episode completion.
 
-- `manifests/`
-  - placeholder for one JSON manifest per normalized run
-- `runs.csv`
-  - generated flat catalog used by the notebooks
+## Figures
 
-The notebook entry point for this workspace is:
+The small figures used in the READMEs are tracked in [`figures/`](figures/).
+They are copied from the latest local study outputs and are not a substitute
+for the raw histories.
 
-- `notebooks/90_results/90_results_catalog.ipynb`
+![Reward ablation](figures/reward_ablation_summary.png)
+
+![Physics-informed formulations](figures/physics_informed_summary_bars.png)
+
+![Temporal observations](figures/temporal_summary_bars.png)
+
+![Auxiliary GRU](figures/gru_auxiliary_summary.png)
+
+## Raw artifacts
+
+When present locally, raw outputs are written under:
+
+```text
+matlab_env_python_replica/policy_gradient_experiments/results/
+```
+
+They normally contain `summary.csv`, `study_manifest.json`, per-run
+`summary.json`, model checkpoints, histories, plots, and optional
+`focused_eval/` bundles. The expected artifact contract is documented in
+[`../matlab_env_python_replica/CLI.md`](../matlab_env_python_replica/CLI.md).
+
+The previous catalog contained MATLAB, DQN, and Q-learning paths that do not
+exist in this checkout. They were removed from the current `runs.csv` instead
+of being reported as reproducible current results. Some executed notebooks
+retain embedded historical tables or images; treat those as archival evidence,
+not as a portable result artifact or a current normalized row.
