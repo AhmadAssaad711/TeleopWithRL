@@ -3,10 +3,8 @@
 `30_reward_state_ablation.ipynb` compares reward and observation variants. The
 README records only the selected reward model rather than every ablation row.
 
-The companion
-[`30_reward_state_ablation_results.ipynb`](30_reward_state_ablation_results.ipynb)
-contains the selected reward/state table, training telemetry, and evaluation
-bars.
+The source notebook ends with the selected reward/state table, training
+telemetry, and evaluation bars.
 
 ## Selected reward model: R5
 

@@ -51,17 +51,10 @@ The notebooks are intentionally separated into their own top-level folder.
 - `notebooks/50_policy_gradient/`: PPO, TD3, SAC, and policy-gradient planning.
 - `notebooks/90_results/90_results_catalog.ipynb`: organized results catalog.
 
-Each experiment notebook has an adjacent results companion with the exact
-selected table and relevant graph(s):
-
-- `10_io_parity_results.ipynb`
-- `20_dqn_legacy_baseline_results.ipynb` and `21_ql_workspace_results.ipynb`
-- `30_reward_state_ablation_results.ipynb`
-- `40_waveform_generalization_results.ipynb`
-- `51_ppo_continuous_baseline_results.ipynb`,
-  `52_td3_baseline_results.ipynb`, `53_sac_baseline_results.ipynb`,
-  `54_ppo_discrete_baseline_results.ipynb`, and
-  `55_physics_informed_formulations_results_review.ipynb`
+Each source experiment notebook contains its own Results section with the
+exact table and relevant graph(s). The orientation notebook is the only
+notebook without experiment results; `90_results_catalog.ipynb` remains the
+project-wide cross-study summary.
 
 ## Current Results Snapshot
 

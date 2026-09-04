@@ -32,5 +32,5 @@ The machine-readable audit catalog remains in
 [`../../results_index/runs.csv`](../../results_index/runs.csv); this README
 promotes only the selected models.
 
-The individual experiment result notebooks are listed in
-[`../README.md`](../README.md#individual-result-notebooks).
+The individual experiment notebooks contain their own study-specific Results
+sections; this notebook remains the project-wide selected-results catalog.

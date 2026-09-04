@@ -4,9 +4,8 @@
 replica at the plant I/O boundary. It is the place to verify dynamics and
 signal mappings before interpreting RL results.
 
-The exact parity result is recorded in
-[`10_io_parity_results.ipynb`](10_io_parity_results.ipynb), including its
-correlation bar graph.
+The exact parity table and correlation bar graph are included at the end of
+`10_io_parity.ipynb`.
 
 ## Recorded parity results
 
