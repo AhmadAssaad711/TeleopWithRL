@@ -18,6 +18,10 @@ the following full-overlap correlations:
 | `x_s` | 0.99863 |
 | `Fe` | 0.99751 |
 
+## Correlation graph
+
+![MATLAB/Python parity correlations](../../results_index/figures/matlab_python_parity_bars.png)
+
 Additional checks recorded by the project are a reproduced open-loop
 singularity at approximately `33.793 s` and bounded behavior through `40 s`
 under the reduced input `F_h(t) = 5 + 5 sin(0.5t)`.

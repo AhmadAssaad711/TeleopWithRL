@@ -12,6 +12,15 @@ The companion `90_results_catalog.ipynb` displays the same tracked assets.
 | `R5_second_order` | closest focused ratio to 1.0 | 6.594 | 2.249 | 8.386 | 7.162 | 1.272 | **1.009** | 688.738 | 55.5% |
 | `T3_posvel_current` | strongest temporal compromise | 5.440 | 2.335 | 5.177 | 3.348 | 1.357 | 1.075 | 417.006 | 57.0% |
 
+## Analysis
+
+`F4_accel_state` is the primary tracking candidate because it has the best
+focused tracking error. `R5_second_order` is retained for its ratio closest to
+the target value of `1.0`, while `T3_posvel_current` is the temporal-observation
+alternative with the strongest tracking/transparency compromise. These are
+single-study results; validity and ratio-error values should be considered
+alongside the headline RMSE values.
+
 ## Training graph
 
 The training graph uses the saved `train.npz` export of the callback scalars

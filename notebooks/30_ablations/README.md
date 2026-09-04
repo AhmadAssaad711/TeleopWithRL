@@ -1,29 +1,24 @@
 # Ablations
 
 `30_reward_state_ablation.ipynb` compares reward and observation variants. The
-README records only the selected reward model rather than every ablation row.
+table below promotes the best recorded DQN model from each ablation stage.
 
-The source notebook ends with the selected reward/state table, training
-telemetry, and evaluation bars.
+## Selected DQN ablation results
 
-## Selected reward model: R5
+| Model | Stage | Tracking RMSE [mm] | Pre-switch [mm] | Post-switch [mm] | Transparency RMSE [W] | Pre-switch [W] | Post-switch [W] | Invalid episodes |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `r06_t70_tr10_j020` | reward | **4.042** | 6.054 | 2.487 | 1.988 | 2.988 | 1.210 | 0.0% |
+| `S2_relative_mechanics` | state | 5.267 | 7.761 | 3.392 | 2.025 | 3.021 | 1.261 | 0.0% |
 
-`R5_second_order` is retained because its focused-evaluation transparency ratio
-is closest to the target value of `1.0`.
+## Evaluation graph
 
-| Model | Training endpoint track RMSE [mm] | Training endpoint transp. RMSE [W] | Focused eval track [mm] | Focused eval post-contact [mm] | Focused eval transp. [W] | Ratio | Ratio error RMSE | Valid |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `R5_second_order` | 6.594 | 2.249 | 8.386 | 7.162 | 1.272 | **1.009** | 688.738 | 55.5% |
+![DQN reward/state selected evaluation bars](../../results_index/figures/dqn_reward_state_best_evaluation_bars.png)
 
-## Training and evaluation graphs
+## Analysis
 
-Training is represented by the saved callback telemetry export. Evaluation is
-represented only by the selected-model bar graph.
-
-![Selected-model training telemetry](../../results_index/figures/selected_models_training.png)
-
-![Selected-model evaluation bars](../../results_index/figures/selected_models_evaluation_bars.png)
-
-The reward ablation is not a multi-seed result. The ratio statistic must be
-read with ratio error and validity because velocity-denominator singularities
-can make a ratio appear deceptively close to one.
+The reward-stage winner `r06_t70_tr10_j020` has the lowest recorded tracking
+and transparency RMSE of the two promoted rows. The state-stage winner
+`S2_relative_mechanics` remains close, with a slightly higher overall tracking
+error and transparency error. Both rows report zero invalid episodes. These are
+selected rows from the executed notebook output; the full ablation tables
+remain in the notebook, while the raw DQN result directory is not tracked.
